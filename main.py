@@ -1,0 +1,901 @@
+from fastapi import FastAPI, Request, File, UploadFile, HTTPException, Query
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional
+from contextlib import asynccontextmanager
+import requests
+import tempfile
+import os
+import json
+import edge_tts
+import whisper
+import torch
+import uuid
+import datetime
+import logging
+import asyncio
+import random
+from concurrent.futures import ThreadPoolExecutor
+import traceback
+from Login import auth_router
+from FindHistory import history_router
+from Scoring_sys import score_router
+# 導入資料庫相關模組
+from databases import (
+    get_conversation_history, 
+    save_chat_message, 
+    save_answer_log,
+    get_db,
+    create_user_session,
+    SessionLocal,
+    ChatLog,
+    AnswerLog,
+    UserLogin,
+    AgentSettings,
+    SessionUserMap
+)
+
+# 配置日誌
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# --- 初始化模型 ---
+whisper_model = None
+available_voices = []
+
+# --- 目錄設定 ---
+AUDIO_DIR = "audio"
+TEMP_DIR = "temp"
+os.makedirs(AUDIO_DIR, exist_ok=True)
+os.makedirs(TEMP_DIR, exist_ok=True)
+
+# --- 線程池用於處理 AI 任務 ---
+executor = ThreadPoolExecutor(max_workers=4)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """應用生命週期管理"""
+    # 啟動時執行
+    logger.info("AI Voice Chat API 啟動中...")
+    
+    # 初始化模型
+    await init_models()
+    
+    # 創建無聲音頻檔案
+    create_silence_audio()
+    
+    # 清理舊的臨時檔案
+    for temp_file in os.listdir(TEMP_DIR):
+        try:
+            temp_path = os.path.join(TEMP_DIR, temp_file)
+            if os.path.isfile(temp_path):
+                os.remove(temp_path)
+        except Exception as e:
+            logger.warning(f"清理臨時檔案失敗: {e}")
+    
+    logger.info("AI Voice Chat API 啟動完成")
+    # yield 前的程式碼會在API 啟動時執行
+    yield
+    #yield 後的程式碼會在API 關閉時執行
+    # 關閉時執行
+    logger.info("AI Voice Chat API 關閉中...")
+    executor.shutdown(wait=True)
+    logger.info("AI Voice Chat API 已關閉")
+
+app = FastAPI(title="AI Voice Chat API", version="1.0.0", lifespan=lifespan)
+
+# 修正 CORS 配置 - 更具體的設置
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:8080", 
+        "http://localhost:5173",  # Vite 默認端口
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8080",
+        "http://127.0.0.1:5173"
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
+app.include_router(auth_router)
+app.include_router(history_router)
+app.include_router()
+
+
+# --- 初始化模型 ---
+async def init_models():
+    """初始化模型（異步版本）"""
+    global whisper_model, available_voices
+    
+    try:
+        # 初始化 Whisper STT 模型
+        logger.info("初始化 Whisper STT 模型...")
+        whisper_model = whisper.load_model("base")
+        logger.info("Whisper STT 模型初始化完成")
+        
+    except Exception as e:
+        logger.error(f"Whisper STT 模型初始化失敗: {e}")
+        logger.error(traceback.format_exc())
+    
+    try:
+        # 獲取可用的 edge-tts 語音列表
+        logger.info("獲取 edge-tts 語音列表...")
+        voices = await edge_tts.list_voices()
+        
+        # 篩選繁體中文語音
+        chinese_voices = [v for v in voices if 'zh-TW' in v['Locale'] or 'zh-CN' in v['Locale']]
+        available_voices = chinese_voices[:5]  # 取前5個
+        
+        logger.info(f"可用語音數量: {len(available_voices)}")
+        for voice in available_voices:
+            logger.info(f"  - {voice['Name']}: {voice['ShortName']} ({voice['Gender']})")
+            
+    except Exception as e:
+        logger.error(f"edge-tts 語音列表獲取失敗: {e}")
+        logger.error(traceback.format_exc())
+
+
+# --- Pydantic 模型 ---
+class ChatRequest(BaseModel):
+    text: str
+    session_id: str = None
+    voice: str = None  # 可選的語音選擇
+
+class STTResponse(BaseModel):
+    text: str
+    confidence: float = 0.0
+
+class ChatResponse(BaseModel):
+    text: str
+    audioUrl: str
+    session_id: str
+
+class VoiceInfo(BaseModel):
+    name: str
+    short_name: str
+    gender: str
+    locale: str
+
+class AgentInfo(BaseModel):
+    agent_code: str
+    gender: str
+    age: str
+    med_info: str
+    disease: str
+    med_complexity: str
+    med_code: str
+    special_status: str
+    check_day: str
+    check_time: str
+    check_type: str
+    low_cost_med: str
+    
+# 修改 SessionInfo 模型，增加 agent_code
+class SessionInfo(BaseModel):
+    session_id: str
+    username: str
+    agent_code: str
+
+
+
+# --- 對話管理類別 ---
+class ConversationManager:
+
+    """對話管理器，負責處理歷史記錄和總結"""
+    
+    def __init__(self):
+        self.max_history_length = 2000  # 最大歷史長度
+        self.summary_trigger_length = 1500  # 觸發總結的長度
+        
+    async def get_formatted_history(self, session_id: str, limit: int = 20) -> str:
+        """獲取格式化的對話歷史"""
+        try:
+            # 首先檢查是否有歷史總結
+            summary = self.get_conversation_summary(session_id)
+            recent_history = get_conversation_history(session_id, limit=limit)
+            
+            formatted_history = ""
+            
+            # 如果有總結，加入總結內容
+            if summary:
+                formatted_history += f"# 之前的對話總結：\n{summary}\n\n"
+            
+            # 加入最近的對話
+            if recent_history:
+                formatted_history += f"# 最近的對話：\n{recent_history}"
+            
+            return formatted_history
+            
+        except Exception as e:
+            logger.error(f"獲取對話歷史錯誤: {e}")
+            return ""
+    
+    def get_conversation_summary(self, session_id: str) -> Optional[str]:
+        """獲取對話總結（需要實現資料庫查詢）"""
+        # 這裡需要根據你的資料庫實現
+        # 例如：SELECT summary FROM conversation_summary WHERE session_id = ?
+        try:
+            # 暫時返回空，你需要根據實際資料庫實現
+            return None
+        except Exception as e:
+            logger.error(f"獲取對話總結錯誤: {e}")
+            return None
+    
+    def save_conversation_summary(self, session_id: str, summary: str):
+        """儲存對話總結（需要實現資料庫儲存）"""
+        try:
+            # 這裡需要根據你的資料庫實現
+            # 例如：INSERT OR REPLACE INTO conversation_summary (session_id, summary, updated_at) VALUES (?, ?, ?)
+            pass
+        except Exception as e:
+            logger.error(f"儲存對話總結錯誤: {e}")
+    
+    async def should_summarize(self, session_id: str) -> bool:
+        """判斷是否需要總結歷史"""
+        try:
+            history = get_conversation_history(session_id, limit=50)
+            return len(history) > self.summary_trigger_length
+        except Exception as e:
+            logger.error(f"檢查總結需求錯誤: {e}")
+            return False
+    
+    async def summarize_conversation(self, session_id: str) -> str:
+        """總結對話歷史"""
+        try:
+            # 獲取較長的歷史記錄用於總結
+            full_history = get_conversation_history(session_id, limit=100)
+            
+            summary_prompt = (
+                "請將以下的對話歷史總結成一段簡潔的敘述，保留重要的背景信息和關鍵細節。\n"
+                "重點包括：\n"
+                "1. 病患的基本情況和主要關切\n"
+                "2. 醫生提供的重要建議或說明\n"
+                "3. 病患的主要疑問和已獲得的答案\n"
+                "4. 任何重要的醫療細節\n\n"
+                "請用繁體中文回應，控制在200字以內。\n\n"
+                f"對話歷史：\n{full_history}\n\n"
+                "總結："
+            )
+            
+            summary = await generate_llm_response(summary_prompt)
+            
+            # 儲存總結
+            self.save_conversation_summary(session_id, summary)
+            
+            return summary
+            
+        except Exception as e:
+            logger.error(f"總結對話錯誤: {e}")
+            return ""
+
+# --- 工具函數 ---
+async def generate_llm_response(prompt: str) -> str:
+    """生成 LLM 回應"""
+    try:
+        ollama_payload = {
+            "model": "gemma3:4b-it-q4_K_M",
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "max_tokens": 500
+            }
+        }
+        
+        response = requests.post(
+            "http://localhost:11434/api/generate", 
+            json=ollama_payload, 
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result.get('response', '抱歉，我無法回應您的問題。')
+        else:
+            logger.error(f"Ollama API 錯誤: {response.status_code} - {response.text}")
+            return "抱歉，AI 服務暫時無法使用。"
+            
+    except requests.exceptions.ConnectionError:
+        logger.error("無法連接到 Ollama API，請確認 Ollama 服務是否運行")
+        return "抱歉，AI 服務未啟動。"
+    except requests.exceptions.Timeout:
+        logger.error("Ollama API 超時")
+        return "抱歉，回應時間過長，請稍後再試。"
+    except Exception as e:
+        logger.error(f"LLM 生成錯誤: {e}")
+        return "抱歉，處理您的請求時發生錯誤。"
+
+async def generate_tts_audio(text: str, voice: str = None) -> str:
+    """使用 edge-tts 生成 TTS 音頻檔案"""
+    global available_voices
+    
+    if not text or text.strip() == "":
+        text = "沒有內容"
+    
+    # 選擇語音
+    if voice and voice in [v['ShortName'] for v in available_voices]:
+        selected_voice = voice
+    else:
+        # 預設使用繁體中文女聲
+        default_voices = [
+            "zh-TW-HsiaoChenNeural",  # 繁體中文女聲
+            "zh-TW-YunJheNeural",     # 繁體中文男聲
+            "zh-CN-XiaoxiaoNeural",   # 簡體中文女聲
+            "zh-CN-YunxiNeural"       # 簡體中文男聲
+        ]
+        
+        selected_voice = default_voices[0]
+        
+        # 如果有可用語音列表，優先使用
+        if available_voices:
+            # 優先選擇女聲
+            female_voices = [v for v in available_voices if v['Gender'] == 'Female']
+            if female_voices:
+                selected_voice = female_voices[0]['ShortName']
+            else:
+                selected_voice = available_voices[0]['ShortName']
+    
+    try:
+        audio_filename = f"tts_{uuid.uuid4().hex}.wav"
+        audio_path = os.path.join(AUDIO_DIR, audio_filename)
+        
+        # 使用 edge-tts 生成音頻
+        communicate = edge_tts.Communicate(text, selected_voice)
+        await communicate.save(audio_path)
+        
+        # 檢查檔案是否生成成功
+        if not os.path.exists(audio_path):
+            logger.error(f"edge-tts 音頻檔案生成失敗: {audio_path}")
+            return "/audio/silence.wav"
+        
+        logger.info(f"edge-tts 音頻生成成功: {audio_filename} (語音: {selected_voice})")
+        return f"/audio/{audio_filename}"
+        
+    except Exception as e:
+        logger.error(f"edge-tts 生成錯誤: {e}")
+        logger.error(traceback.format_exc())
+        return "/audio/silence.wav"
+
+def create_silence_audio():
+    """創建無聲音頻檔案作為備用"""
+    try:
+        import numpy as np
+        from scipy.io import wavfile
+        
+        silence_path = os.path.join(AUDIO_DIR, "silence.wav")
+        
+        if not os.path.exists(silence_path):
+            # 創建 1 秒的無聲音頻
+            sample_rate = 22050
+            duration = 1.0
+            samples = int(sample_rate * duration)
+            audio_data = np.zeros(samples, dtype=np.int16)
+            
+            wavfile.write(silence_path, sample_rate, audio_data)
+            logger.info("無聲音頻檔案創建成功")
+    
+    except Exception as e:
+        logger.warning(f"無法創建無聲音頻檔案: {e}")
+
+def transcribe_audio(audio_path: str) -> dict:
+    """使用 Whisper 轉錄音頻"""
+    if whisper_model is None:
+        return {"text": "", "confidence": 0.0, "language": "zh"}
+    
+    try:
+        result = whisper_model.transcribe(
+            audio_path, 
+            language="zh",
+            fp16=False
+        )
+        
+        text = result["text"].strip()
+        segments = result.get("segments", [])
+        avg_confidence = sum(seg.get("no_speech_prob", 0) for seg in segments) / len(segments) if segments else 0
+        confidence = 1.0 - avg_confidence
+        
+        return {
+            "text": text,
+            "confidence": confidence,
+            "language": result.get("language", "zh")
+        }
+    except Exception as e:
+        logger.error(f"音頻轉錄錯誤: {e}")
+        logger.error(traceback.format_exc())
+        return {"text": "", "confidence": 0.0, "language": "zh"}
+
+def build_optimized_prompt(user_text: str, history: str, agent_settings: AgentSettings = None) -> str:
+    """構建優化的 prompt，包含 agent 設定"""
+    
+    # 基礎系統角色設定
+    base_system_prompt = (
+        "你是一個之後要進行大腸鏡檢查的病患 而使用者會扮演醫生的角色進行衛教 告訴你在檢查的前幾天需要做什麼或注意甚麼\n"
+        "請保持以下特點：\n"
+        "用繁體中文回應\n"
+        "覺得醫生講得模糊的時候可以提問 其他時候只需單純應答\n"
+        "回應簡潔有力，不超過20字\n"
+        "不要重複醫生的問題，直接給出回應\n"
+        "你是沒有醫療背景的病患 所以不懂太多醫學知識\n"
+    )
+    
+    # 如果有 agent 設定，加入個人化資訊
+    if agent_settings:
+        personal_info = f"""
+你的個人資訊：
+- 性別：{agent_settings['gender']}
+- 年齡：{agent_settings['age']}
+- 疾病狀況：{agent_settings['disease']}
+- 目前用藥：{agent_settings['med_info']}
+- 特殊狀況：{agent_settings['special_status']}
+- 檢查日期：{agent_settings['check_day']}
+- 檢查時間：{agent_settings['check_time']}
+- 檢查類型：{agent_settings['check_type']}
+- 低渣食物購買：{agent_settings['low_cost_med']}
+
+請根據你的個人狀況來回應使用者的問題，展現出符合你背景的關切和疑問。
+"""
+        system_prompt = base_system_prompt + personal_info
+    else:
+        system_prompt = base_system_prompt
+    
+    # 組合完整 prompt
+    if history.strip():
+        prompt = (
+            f"{system_prompt}\n\n"
+            f"{history}\n\n"
+            f"使用者：{user_text}\n"
+            f"你："
+        )
+    else:
+        prompt = (
+            f"{system_prompt}\n\n"
+            f"使用者：{user_text}\n"
+            f"你："
+        )
+    
+    return prompt
+
+def get_agent_code_by_session(session_id: str) -> Optional[str]:
+    """根据 session_id 获取 agent_code"""
+    try:
+        db = SessionLocal()
+        session_user_map = db.query(SessionUserMap).filter(
+            SessionUserMap.session_id == session_id
+        ).first()
+        
+        if not session_user_map:
+            logger.warning(f"找不到 session_id: {session_id} 的资料")
+            return None
+            
+        return session_user_map.agent_code
+        
+    except Exception as e:
+        logger.error(f"获取 agent_code 错误: {e}")
+        return None
+    finally:
+        db.close()
+
+
+# --- API 端點 ---
+
+@app.get("/")
+async def root():
+    """健康檢查端點"""
+    return {
+        "message": "AI Voice Chat API is running", 
+        "status": "healthy",
+        "models": {
+            "edge_tts": True,
+            "whisper": whisper_model is not None
+        },
+        "available_voices": len(available_voices)
+    }
+
+@app.get("/voices", response_model=list[VoiceInfo])
+async def get_voices():
+    """獲取可用語音列表"""
+    return [
+        VoiceInfo(
+            name=voice['Name'],
+            short_name=voice['ShortName'],
+            gender=voice['Gender'],
+            locale=voice['Locale']
+        )
+        for voice in available_voices
+    ]
+
+@app.options("/{path:path}")
+async def options_handler(path: str):
+    """處理 OPTIONS 請求"""
+    return JSONResponse(content={"message": "OK"})
+
+@app.post("/stt", response_model=STTResponse)
+async def speech_to_text(audio: UploadFile = File(...)):
+    """完整音頻轉文字 API"""
+    logger.info(f"收到 STT 請求: {audio.filename}, 類型: {audio.content_type}")
+    
+    # 檢查檔案類型
+    allowed_types = ['audio/wav', 'audio/mpeg', 'audio/mp3', 'audio/webm', 'audio/ogg']
+    if audio.content_type not in allowed_types:
+        logger.warning(f"不支援的音頻類型: {audio.content_type}")
+        # 不嚴格限制，允許嘗試處理
+    
+    temp_filename = f"stt_{uuid.uuid4().hex}_{audio.filename}"
+    temp_path = os.path.join(TEMP_DIR, temp_filename)
+    
+    try:
+        # 保存上傳的音頻檔案
+        with open(temp_path, "wb") as f:
+            content = await audio.read()
+            f.write(content)
+        
+        logger.info(f"音頻檔案大小: {len(content)} bytes")
+        
+        # 檢查檔案大小
+        if len(content) < 100:
+            logger.warning("音頻檔案太小，可能是空檔案")
+            return STTResponse(text="", confidence=0.0)
+        
+        # 轉錄音頻
+        loop = asyncio.get_event_loop()
+        transcription = await loop.run_in_executor(executor, transcribe_audio, temp_path)
+        
+        logger.info(f"轉錄結果: {transcription}")
+        
+        return STTResponse(
+            text=transcription["text"],
+            confidence=transcription["confidence"]
+        )
+        
+    except Exception as e:
+        logger.error(f"STT 處理錯誤: {e}")
+        logger.error(traceback.format_exc())
+        return STTResponse(text="", confidence=0.0)
+    finally:
+        # 清理臨時檔案
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception as e:
+                logger.warning(f"清理臨時檔案失敗: {e}")
+
+@app.post("/stt-chunk", response_model=STTResponse)
+async def speech_to_text_chunk(audio: UploadFile = File(...)):
+    """實時音頻塊轉文字 API"""
+    logger.info(f"收到 STT 塊請求: {audio.filename}, 類型: {audio.content_type}")
+    
+    temp_filename = f"chunk_{uuid.uuid4().hex}.webm"
+    temp_path = os.path.join(TEMP_DIR, temp_filename)
+    
+    try:
+        with open(temp_path, "wb") as f:
+            content = await audio.read()
+            f.write(content)
+        
+        logger.info(f"音頻塊大小: {len(content)} bytes")
+        
+        # 如果音頻檔案太小，可能是靜音
+        if len(content) < 1000:
+            logger.info("音頻塊太小，跳過轉錄")
+            return STTResponse(text="", confidence=0.0)
+        
+        # 轉錄音頻塊
+        loop = asyncio.get_event_loop()
+        transcription = await loop.run_in_executor(executor, transcribe_audio, temp_path)
+        
+        logger.info(f"塊轉錄結果: {transcription}")
+        
+        return STTResponse(
+            text=transcription["text"],
+            confidence=transcription["confidence"]
+        )
+        
+    except Exception as e:
+        logger.error(f"STT 塊處理錯誤: {e}")
+        logger.error(traceback.format_exc())
+        return STTResponse(text="", confidence=0.0)
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception as e:
+                logger.warning(f"清理臨時檔案失敗: {e}")
+
+# 創建對話管理器實例
+conversation_manager = ConversationManager()
+
+# 新增：根据 agent_code 获取 AgentSettings 的函数
+def get_agent_settings(agent_code: str) -> Optional[dict]:
+    """根据 agent_code 获取 AgentSettings 资料"""
+    try:
+        db = SessionLocal()
+        agent_setting = db.query(AgentSettings).filter(
+            AgentSettings.agent_code == agent_code
+        ).first()
+        
+        if not agent_setting:
+            logger.warning(f"找不到 agent_code: {agent_code} 的资料")
+            return None
+        
+        return {
+            "agent_code": agent_setting.agent_code,
+            "gender": agent_setting.gender,
+            "age": agent_setting.age,
+            "med_info": agent_setting.med_info,
+            "disease": agent_setting.disease,
+            "med_complexity": agent_setting.med_complexity,
+            "med_code": agent_setting.med_code,
+            "special_status": agent_setting.special_status,
+            "check_day": agent_setting.check_day,
+            "check_time": agent_setting.check_time,
+            "check_type": agent_setting.check_type,
+            "low_cost_med": agent_setting.low_cost_med
+        }
+        
+    except Exception as e:
+        logger.error(f"获取 AgentSettings 错误: {e}")
+        return None
+    finally:
+        db.close()
+
+def get_agent_code_by_session(session_id: str) -> Optional[str]:
+    """根据 session_id 获取 agent_code"""
+    try:
+        db = SessionLocal()
+        session_user_map = db.query(SessionUserMap).filter(
+            SessionUserMap.session_id == session_id
+        ).first()
+        
+        if not session_user_map:
+            logger.warning(f"找不到 session_id: {session_id} 的资料")
+            return None
+            
+        return session_user_map.agent_code
+        
+    except Exception as e:
+        logger.error(f"获取 agent_code 错误: {e}")
+        return None
+    finally:
+        db.close()
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat_api(req: ChatRequest):
+    """主要聊天 API"""
+    logger.info(f"收到聊天請求: {req.text[:50]}...")
+    
+    user_text = req.text.strip()
+    #session_id 基本上會在進到聊天畫面時就會傳送給前端
+    #這樣就可以直接接收session_id 就設在SessionUserMap吧
+    session_id = req.session_id or str(uuid.uuid4())
+    
+    if not user_text:
+        raise HTTPException(status_code=400, detail="訊息內容不能為空")
+    
+    try:
+        agent_code = get_agent_code_by_session(session_id)
+        if not agent_code:
+                raise HTTPException(status_code=400, detail="无法获取 agent_code")
+        
+        agent_settings = get_agent_settings(agent_code)
+        if not agent_settings:
+            raise HTTPException(status_code=404, detail=f"找不到 agent_code: {agent_code} 的设定")
+        
+        logger.info(f"取得agent settings: {agent_settings['gender']}...")
+        
+        # 儲存使用者訊息
+        session_id = save_chat_message('user', user_text, session_id)
+        
+        # 獲取對話歷史這邊 要改成取得過去資料並總結
+        # history_txt = get_conversation_history(session_id, limit=20)
+        history = await conversation_manager.get_formatted_history(session_id, limit=15)
+        
+        '''還要再新增透過session_id查找資料庫 看這個session對應到哪個Agent'''
+        
+        # 組合 prompt
+        prompt = build_optimized_prompt(user_text, history, agent_settings)
+        
+        logger.info(f"使用的 prompt 長度: {len(prompt)} 字符")
+        
+        # 生成 LLM 回應
+        llm_response = await generate_llm_response(prompt)
+               
+        # 清理回應文字
+        if llm_response.startswith("你："):
+            llm_response = llm_response[5:].strip()
+        
+        logger.info(f"Patient 回應: {llm_response}")
+        
+        # 儲存 AI 回應
+        save_chat_message('patient', llm_response, session_id, agent_code)
+        
+        # 生成 TTS 音頻
+        audio_url = await generate_tts_audio(llm_response, req.voice)
+        
+        return ChatResponse(
+            text=llm_response,
+            audioUrl=audio_url,
+            session_id=session_id
+        )
+        
+    except Exception as e:
+        logger.error(f"聊天處理錯誤: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"處理聊天請求時發生錯誤: {str(e)}")
+
+@app.get("/audio/{audio_file}")
+async def get_audio(audio_file: str):
+    """獲取音頻檔案"""
+    # 安全檢查
+    if not audio_file.endswith(('.wav', '.mp3', '.ogg')):
+        raise HTTPException(status_code=400, detail="不支援的音頻格式")
+    
+    audio_path = os.path.join(AUDIO_DIR, audio_file)
+    
+    if not os.path.exists(audio_path):
+        logger.error(f"音頻檔案不存在: {audio_path}")
+        raise HTTPException(status_code=404, detail="音頻檔案不存在")
+    
+    return FileResponse(
+        audio_path, 
+        media_type="audio/wav",
+        headers={
+            "Cache-Control": "public, max-age=3600",
+            "Access-Control-Allow-Origin": "*"
+        }
+    )
+
+@app.get("/health")
+async def health_check():
+    """詳細健康檢查"""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.datetime.now().isoformat(),
+        "models": {
+            "edge_tts": True,
+            "whisper_initialized": whisper_model is not None
+        },
+        "directories": {
+            "audio_dir_exists": os.path.exists(AUDIO_DIR),
+            "temp_dir_exists": os.path.exists(TEMP_DIR)
+        },
+        "available_voices": len(available_voices)
+    }
+
+@app.get("/agent_info", response_model=AgentInfo)
+async def agent_info_find(
+    level: str = Query(..., description="難度級別: 初級, 中級, 高級"),
+    username: str = Query(..., description="使用者名稱")
+):
+    """
+    根據難度級別隨機選擇並返回 AgentSettings 資料，同時創建 SessionUserMap 記錄
+    """
+    try:
+        # 建立資料庫連接
+        db = SessionLocal()
+        
+        # 根據難度級別映射到對應的字母前綴
+        level_mapping = {
+            "初級": "A",
+            "中級": "B", 
+            "高級": "C"
+        }
+        
+        # 檢查難度級別是否有效
+        if level not in level_mapping:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"無效的難度級別: {level}。請使用: 初級, 中級, 高級"
+            )
+        
+        # 取得對應的字母前綴
+        prefix = level_mapping[level]
+        
+        # 隨機選擇1-5之間的數字
+        random_number = random.randint(1, 5)
+        
+        # 組合 agent_code
+        agent_code = f"{prefix}{random_number}"
+        
+        logger.info(f"查詢 AgentSettings: level={level}, agent_code={agent_code}, username={username}")
+        
+        # 從資料庫查詢對應的 AgentSettings
+        agent_setting = db.query(AgentSettings).filter(
+            AgentSettings.agent_code == agent_code
+        ).first()
+        
+        if not agent_setting:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"找不到 agent_code: {agent_code} 的資料"
+            )
+        
+        
+        # 組合回傳資料
+        agent_info = AgentInfo(
+            agent_code=agent_setting.agent_code,
+            gender=agent_setting.gender or "",
+            age=agent_setting.age or "",
+            med_info=agent_setting.med_info or "",
+            disease=agent_setting.disease or "",
+            med_complexity=agent_setting.med_complexity or "",
+            med_code=agent_setting.med_code or "",
+            special_status=agent_setting.special_status or "",
+            check_day=agent_setting.check_day or "",
+            check_time=agent_setting.check_time or "",
+            check_type=agent_setting.check_type or "",
+            low_cost_med=agent_setting.low_cost_med or ""
+        )
+        
+        logger.info(f"成功返回 AgentSettings 資料: {agent_code}")
+        return agent_info
+        
+    except HTTPException:
+        # 重新拋出 HTTP 異常
+        raise
+    except Exception as e:
+        logger.error(f"查詢 AgentSettings 時發生錯誤: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=500, 
+            detail=f"伺服器內部錯誤: {str(e)}"
+        )
+    finally:
+        db.close()
+
+# 新增：create_session API
+@app.post("/create_session")
+async def create_session(session_info: SessionInfo):
+    """创建新的 session"""
+    try:
+        db = SessionLocal()
+        
+        # 检查是否已存在
+        existing_session = db.query(SessionUserMap).filter(
+            SessionUserMap.session_id == session_info.session_id
+        ).first()
+        
+        if existing_session:
+            logger.info(f"Session {session_info.session_id} 已存在")
+            return {"message": "Session already exists", "session_id": session_info.session_id}
+        
+        # 创建新的 session 记录
+        new_session = SessionUserMap(
+            session_id=session_info.session_id,
+            username=session_info.username,
+            agent_code=session_info.agent_code,
+            created_at=datetime.datetime.now()
+        )
+        
+        db.add(new_session)
+        db.commit()
+        
+        logger.info(f"创建新 session: {session_info.session_id}")
+        
+        return {
+            "message": "Session created successfully",
+            "session_id": session_info.session_id,
+            "username": session_info.username,
+            "agent_code": session_info.agent_code
+        }
+        
+    except Exception as e:
+        logger.error(f"创建 session 错误: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"创建 session 失败: {str(e)}")
+    finally:
+        db.close()
+    
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "main:app", 
+        host="0.0.0.0", 
+        port=8000, 
+        reload=True,
+        log_level="info"
+    )
