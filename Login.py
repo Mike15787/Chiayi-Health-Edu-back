@@ -193,7 +193,7 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
 @auth_router.post("/register", response_model=MessageResponse)
 async def register(request: RegisterRequest, db: Session = Depends(get_db)):
     """使用者註冊"""
-    print("收到註冊資料：", request.dict())
+    #print("收到註冊資料：", request.dict())
     logger.info(f"使用者嘗試註冊: {request.username}")
     
     # 驗證密碼確認

@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 import traceback
 from Login import auth_router
 from FindHistory import history_router
-from Scoring_sys import score_router
+
 # 導入資料庫相關模組
 from databases import (
     get_conversation_history, 
@@ -102,7 +102,7 @@ app.add_middleware(
 )
 app.include_router(auth_router)
 app.include_router(history_router)
-app.include_router()
+
 
 
 # --- 初始化模型 ---
