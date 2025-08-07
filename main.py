@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, File, UploadFile, HTTPException, Query
+from fastapi import FastAPI, Request, File, UploadFile, HTTPException, Query, Path
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 import traceback
 from Login import auth_router
 from FindHistory import history_router
+from Scoring import score_router
 
 # 導入資料庫相關模組
 from databases import (
@@ -27,7 +28,9 @@ from databases import (
     save_chat_message, 
     save_answer_log,
     get_db,
-    create_user_session,
+    save_db_conversation_summary,
+    get_latest_conversation_summary,
+    get_user_message_count,
     SessionLocal,
     ChatLog,
     AnswerLog,
@@ -35,6 +38,8 @@ from databases import (
     AgentSettings,
     SessionUserMap
 )
+
+from agentset import insert_agent_data
 
 # 配置日誌
 logging.basicConfig(level=logging.INFO)
@@ -58,6 +63,10 @@ async def lifespan(app: FastAPI):
     """應用生命週期管理"""
     # 啟動時執行
     logger.info("AI Voice Chat API 啟動中...")
+    
+    logger.info("正在檢查並插入 Agent 設定資料...")
+    insert_agent_data()
+    logger.info("Agent 設定資料檢查完畢。")
     
     # 初始化模型
     await init_models()
@@ -102,7 +111,7 @@ app.add_middleware(
 )
 app.include_router(auth_router)
 app.include_router(history_router)
-
+app.include_router(score_router)
 
 
 # --- 初始化模型 ---
@@ -187,67 +196,71 @@ class ConversationManager:
     """對話管理器，負責處理歷史記錄和總結"""
     
     def __init__(self):
-        self.max_history_length = 2000  # 最大歷史長度
-        self.summary_trigger_length = 1500  # 觸發總結的長度
+        # 移除了舊的長度限制屬性
+        pass
         
-    async def get_formatted_history(self, session_id: str, limit: int = 20) -> str:
-        """獲取格式化的對話歷史"""
+    async def get_formatted_history(self, session_id: str, limit: int = 10) -> str:
+        """
+        獲取格式化的對話歷史。
+        如果存在總結，則返回總結；否則，返回最近的對話記錄。
+        """
         try:
-            # 首先檢查是否有歷史總結
-            summary = self.get_conversation_summary(session_id)
-            recent_history = get_conversation_history(session_id, limit=limit)
+            # --- MODIFIED (Requirement 4): 優先獲取總結 ---
+            summary = get_latest_conversation_summary(session_id)
             
-            formatted_history = ""
-            
-            # 如果有總結，加入總結內容
             if summary:
-                formatted_history += f"# 之前的對話總結：\n{summary}\n\n"
-            
-            # 加入最近的對話
-            if recent_history:
-                formatted_history += f"# 最近的對話：\n{recent_history}"
-            
-            return formatted_history
+                # 如果有總結，直接使用總結作為歷史
+                formatted_history = f"# 之前的對話總結：\n{summary}"
+                logger.info(f"Session {session_id}: 使用了對話總結作為歷史。")
+                return formatted_history
+            else:
+                # 如果沒有總結，獲取最近的對話
+                recent_history = get_conversation_history(session_id, limit=limit)
+                if recent_history:
+                    formatted_history = f"# 最近的對話：\n{recent_history}"
+                    return formatted_history
+                return "" # 如果兩者都沒有，返回空字串
             
         except Exception as e:
             logger.error(f"獲取對話歷史錯誤: {e}")
             return ""
     
-    def get_conversation_summary(self, session_id: str) -> Optional[str]:
-        """獲取對話總結（需要實現資料庫查詢）"""
-        # 這裡需要根據你的資料庫實現
-        # 例如：SELECT summary FROM conversation_summary WHERE session_id = ?
-        try:
-            # 暫時返回空，你需要根據實際資料庫實現
-            return None
-        except Exception as e:
-            logger.error(f"獲取對話總結錯誤: {e}")
-            return None
-    
+   
     def save_conversation_summary(self, session_id: str, summary: str):
-        """儲存對話總結（需要實現資料庫儲存）"""
+        """
+        儲存對話總結到資料庫。
+        """
         try:
-            # 這裡需要根據你的資料庫實現
-            # 例如：INSERT OR REPLACE INTO conversation_summary (session_id, summary, updated_at) VALUES (?, ?, ?)
-            pass
+            # --- MODIFIED (Requirement 3): 呼叫新的資料庫函數 ---
+            save_db_conversation_summary(session_id, summary)
         except Exception as e:
             logger.error(f"儲存對話總結錯誤: {e}")
     
     async def should_summarize(self, session_id: str) -> bool:
-        """判斷是否需要總結歷史"""
+        """
+        判斷是否需要總結歷史。
+        每 2 次使用者輸入後觸發一次。
+        """
         try:
-            history = get_conversation_history(session_id, limit=50)
-            return len(history) > self.summary_trigger_length
+            # --- MODIFIED (Requirement 1): 根據使用者訊息數量判斷 ---
+            user_messages_count = get_user_message_count(session_id)
+            # 當使用者訊息數為 2, 4, 6... 時觸發
+            return user_messages_count > 0 and user_messages_count % 2 == 0
         except Exception as e:
             logger.error(f"檢查總結需求錯誤: {e}")
             return False
     
-    async def summarize_conversation(self, session_id: str) -> str:
-        """總結對話歷史"""
+    async def summarize_conversation(self, session_id: str):
+        """總結對話歷史 (這將在背景執行)"""
         try:
-            # 獲取較長的歷史記錄用於總結
-            full_history = get_conversation_history(session_id, limit=100)
+            logger.info(f"開始為 Session {session_id} 進行對話總結...")
+            # 獲取較長的歷史記錄用於總結 (即使已有總結，也基於更長的歷史生成新總結)
+            full_history = get_conversation_history(session_id, limit=50) 
             
+            if not full_history or len(full_history) < 100: # 如果歷史太短，不進行總結
+                logger.info(f"Session {session_id} 歷史記錄太短，跳過總結。")
+                return
+
             summary_prompt = (
                 "請將以下的對話歷史總結成一段簡潔的敘述，保留重要的背景信息和關鍵細節。\n"
                 "重點包括：\n"
@@ -262,25 +275,27 @@ class ConversationManager:
             
             summary = await generate_llm_response(summary_prompt)
             
-            # 儲存總結
-            self.save_conversation_summary(session_id, summary)
-            
-            return summary
+            if summary and "抱歉" not in summary:
+                # 儲存總結
+                self.save_conversation_summary(session_id, summary)
+                logger.info(f"Session {session_id} 的對話總結已成功生成並儲存。")
+            else:
+                logger.warning(f"Session {session_id} 總結生成失敗或內容無效。")
             
         except Exception as e:
-            logger.error(f"總結對話錯誤: {e}")
-            return ""
+            logger.error(f"背景總結任務錯誤 for Session {session_id}: {e}")
+            logger.error(traceback.format_exc())
 
 # --- 工具函數 ---
 async def generate_llm_response(prompt: str) -> str:
     """生成 LLM 回應"""
     try:
         ollama_payload = {
-            "model": "gemma3:4b-it-q4_K_M",
+            "model": "gemma3:4b",
             "prompt": prompt,
             "stream": False,
             "options": {
-                "temperature": 0.7,
+                "temperature": 0.2,
                 "top_p": 0.9,
                 "max_tokens": 500
             }
@@ -411,18 +426,20 @@ def transcribe_audio(audio_path: str) -> dict:
 def build_optimized_prompt(user_text: str, history: str, agent_settings: AgentSettings = None) -> str:
     """構建優化的 prompt，包含 agent 設定"""
     
-    # 基礎系統角色設定
-    base_system_prompt = (
-        "你是一個之後要進行大腸鏡檢查的病患 而使用者會扮演醫生的角色進行衛教 告訴你在檢查的前幾天需要做什麼或注意甚麼\n"
-        "請保持以下特點：\n"
-        "用繁體中文回應\n"
-        "覺得醫生講得模糊的時候可以提問 其他時候只需單純應答\n"
-        "回應簡潔有力，不超過20字\n"
-        "不要重複醫生的問題，直接給出回應\n"
-        "你是沒有醫療背景的病患 所以不懂太多醫學知識\n"
-    )
+    check_day = agent_settings.get('check_day', '幾')
     
-    # 如果有 agent 設定，加入個人化資訊
+    # 基礎角色設定，動態插入天數
+    base_role_prompt = (
+        f"你是一個 {check_day} 天後要做大腸鏡檢查的病患。今天你剛拿到醫生開給你的清腸藥(保可淨)，"
+        "接下來你要去問護理師(使用者)清腸劑怎麼用並接受護理師(使用者)的衛教。\n"
+        "你需要聆聽護理師(使用者)的衛教資訊，給予適當的回應，讓他知道你有在聽。\n"
+        "例如，你可以說「好的」、「我知道了」、「喔~原來是這樣」。\n"
+        "如果對衛教內容有疑問，特別是跟你個人情況相關的，要記得提出來。\n"
+        "回答內容限制在20字內。\n"
+    )
+    # 暫時先跳過特殊狀況
+    # 特殊狀況：{agent_settings['special_status']}
+    
     if agent_settings:
         personal_info = f"""
 你的個人資訊：
@@ -430,19 +447,18 @@ def build_optimized_prompt(user_text: str, history: str, agent_settings: AgentSe
 - 年齡：{agent_settings['age']}
 - 疾病狀況：{agent_settings['disease']}
 - 目前用藥：{agent_settings['med_info']}
-- 特殊狀況：{agent_settings['special_status']}
-- 檢查日期：{agent_settings['check_day']}
+- 離檢查日期：{agent_settings['check_day']}
 - 檢查時間：{agent_settings['check_time']}
 - 檢查類型：{agent_settings['check_type']}
 - 低渣食物購買：{agent_settings['low_cost_med']}
 
-請根據你的個人狀況來回應使用者的問題，展現出符合你背景的關切和疑問。
 """
-        system_prompt = base_system_prompt + personal_info
+        system_prompt = base_role_prompt + personal_info
     else:
-        system_prompt = base_system_prompt
+        system_prompt = base_role_prompt
     
-    # 組合完整 prompt
+    # --- MODIFIED (Requirement 4): 簡化 prompt 組合 ---
+    # history 變數現在可能是「最近的對話」或「之前的對話總結」，邏輯保持不變
     if history.strip():
         prompt = (
             f"{system_prompt}\n\n"
@@ -676,9 +692,21 @@ async def chat_api(req: ChatRequest):
         raise HTTPException(status_code=400, detail="訊息內容不能為空")
     
     try:
+        # 儲存使用者訊息
+        save_chat_message('user', user_text, session_id)
+        
+        # --- NEW (Requirement 2): 觸發非同步背景總結任務 ---
+        # 這個檢查和任務創建不會阻塞後續的回應生成流程
+        if await conversation_manager.should_summarize(session_id):
+            logger.info(f"觸發 Session {session_id} 的背景總結任務...")
+            # 使用 asyncio.create_task 將總結任務放到背景執行
+            asyncio.create_task(conversation_manager.summarize_conversation(session_id))
+        
+        # --- 主要流程繼續 ---
+        
         agent_code = get_agent_code_by_session(session_id)
         if not agent_code:
-                raise HTTPException(status_code=400, detail="无法获取 agent_code")
+            raise HTTPException(status_code=400, detail="无法获取 agent_code")
         
         agent_settings = get_agent_settings(agent_code)
         if not agent_settings:
@@ -686,14 +714,8 @@ async def chat_api(req: ChatRequest):
         
         logger.info(f"取得agent settings: {agent_settings['gender']}...")
         
-        # 儲存使用者訊息
-        session_id = save_chat_message('user', user_text, session_id)
-        
-        # 獲取對話歷史這邊 要改成取得過去資料並總結
-        # history_txt = get_conversation_history(session_id, limit=20)
+        # 獲取對話歷史或總結
         history = await conversation_manager.get_formatted_history(session_id, limit=15)
-        
-        '''還要再新增透過session_id查找資料庫 看這個session對應到哪個Agent'''
         
         # 組合 prompt
         prompt = build_optimized_prompt(user_text, history, agent_settings)
@@ -703,7 +725,6 @@ async def chat_api(req: ChatRequest):
         # 生成 LLM 回應
         llm_response = await generate_llm_response(prompt)
                
-        # 清理回應文字
         if llm_response.startswith("你："):
             llm_response = llm_response[5:].strip()
         
@@ -725,6 +746,33 @@ async def chat_api(req: ChatRequest):
         logger.error(f"聊天處理錯誤: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"處理聊天請求時發生錯誤: {str(e)}")
+
+@app.post("/chat/end/{session_id}")
+async def end_chat_session(session_id: str = Path(..., description="要結束的對話 Session ID")):
+    """
+    標記一個對話 session 為已結束 (is_completed = True)。
+    這個動作是評分的前提。
+    """
+    db = SessionLocal()
+    try:
+        session_map = db.query(SessionUserMap).filter(SessionUserMap.session_id == session_id).first()
+        if not session_map:
+            raise HTTPException(status_code=404, detail="指定的 Session 不存在")
+
+        if session_map.is_completed:
+            logger.info(f"Session {session_id} 已被標記為結束。")
+            return {"status": "already_ended", "message": "Session was already marked as completed."}
+
+        session_map.is_completed = True
+        db.commit()
+        logger.info(f"Session {session_id} 已成功標記為結束。")
+        return {"status": "ended", "message": "Session marked as completed successfully."}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"標記 Session 結束時發生錯誤: {e}")
+        raise HTTPException(status_code=500, detail="標記對話結束時發生內部錯誤。")
+    finally:
+        db.close()
 
 @app.get("/audio/{audio_file}")
 async def get_audio(audio_file: str):

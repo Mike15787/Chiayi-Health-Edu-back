@@ -9,3 +9,6 @@ __pycache__/
 venv/
 .idea/
 *.wav
+/代辦/
+/學弟/
+/評分/

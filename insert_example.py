@@ -1,10 +1,12 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from databases import SessionLocal, ChatLog
 
-def parse_and_import():
+def parse_and_import_example():
+    """
+    讀取 example.txt 檔案並將對話內容匯入到資料庫
+    """
+    # 生成唯一的 session_id 給這次的對話
     session_id = str(uuid.uuid4())
     agent_code = "A5"
     
@@ -18,8 +20,8 @@ def parse_and_import():
         # 讀取檔案
         with open('example.txt', 'r', encoding='utf-8') as file:
             lines = file.readlines()
-            
-        imported_count = 0 #單純計數多少筆對話
+        
+        imported_count = 0
         
         for line_num, line in enumerate(lines, 1):
             # 移除前後空白字元
@@ -63,6 +65,7 @@ def parse_and_import():
         db.commit()
         print(f"\n成功匯入 {imported_count} 筆對話記錄到資料庫")
         print(f"Session ID: {session_id}")
+        
     except FileNotFoundError:
         print("錯誤: 找不到 example.txt 檔案，請確認檔案路徑是否正確")
     except Exception as e:
@@ -100,7 +103,7 @@ if __name__ == "__main__":
     print("這個腳本會將 example.txt 的對話內容匯入到 chatlog 資料表")
     
     # 執行匯入
-    parse_and_import()
+    parse_and_import_example()
     
     # 驗證匯入結果
     print("\n=== 驗證匯入結果 ===")

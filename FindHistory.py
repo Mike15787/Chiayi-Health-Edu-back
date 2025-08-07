@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import Optional
 import logging
 import uuid
+from datetime import datetime
 from databases import find_history
 
 # 配置日誌
@@ -20,6 +21,7 @@ class HistoryResponse(BaseModel):
     age: str
     score: Optional[float] = None
     is_completed: bool = False
+    level: str  # 新增 level 欄位
 
 class ConversationDetailResponse(BaseModel):
     session_info: dict
@@ -39,16 +41,27 @@ async def get_user_history(username: str):
         history_data = find_history(username)
         
         formatted_history = []
+        
         for item in history_data:
+            score_value=None
+            if item["score"] is not None:
+                try:
+                    score_value = float(item["score"])
+                except(ValueError, TypeError):
+                    logger.warning(f"無法將分數 '{item['score']}' 轉換為浮點數，對話ID: {item['session_id']}")
+                    score_value = None
             formatted_history.append(HistoryResponse(
                 session_id=item["session_id"],
-                time=item["time"].isoformat() if isinstance(item["time"], datetime) else item["time"],
+                # 確保時間是 datetime 物件，然後轉換為 ISO 格式字串
+                time=item["time"].isoformat() if isinstance(item["time"], datetime) else str(item["time"]),
                 agent_code=item["agent_code"],
                 gender=item["gender"],
                 age=item["age"],
-                score=item["score"],
-                is_completed=item["is_completed"]
+                score=score_value,
+                is_completed=item["is_completed"],
+                level=item["level"] # 傳遞 level
             ))
+
         
         return formatted_history
         

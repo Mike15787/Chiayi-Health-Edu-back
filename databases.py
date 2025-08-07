@@ -1,7 +1,8 @@
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Boolean
 from sqlalchemy.orm import sessionmaker, declarative_base
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import uuid
+import secrets
 
 # --- 資料庫設定 ---
 DATABASE_URL = 'sqlite:///chatlog.db'
@@ -59,13 +60,6 @@ class AgentSettings(Base):
     check_type = Column(String)
     low_cost_med = Column(String)
 
-
-#還需要再一個資料表用來存放使用者的對話有哪些
-#對話紀錄就單純用chatlog 然後還需要一張資料表去導向chat
-#所以這張table 要放的 sessionid user
-#反正我就是要透過sessionid去找到這個人他總共進行過哪些對話所以這張資料表只需要 user跟 sessionid
-#在chatlog上實現是不行的 一定要另開一張
-
 # 修改 SessionUserMap 模型，添加評分功能
 class SessionUserMap(Base):
     __tablename__ = 'sessionid_user'
@@ -73,8 +67,52 @@ class SessionUserMap(Base):
     username = Column(String(32), nullable=False, comment="使用者名稱")
     agent_code = Column(String, nullable=False, comment="案例代碼")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, comment="對話建立時間")
-    score = Column(Integer, nullable=True, comment="對話評分")
+    score = Column(String(16), nullable=True, comment="對話評分(字串格式)")
     is_completed = Column(Boolean, default=False, comment="是否完成對話")
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String(128), nullable=False, comment="EMAIL")
+    token = Column(String(64), unique=True, nullable=False, comment="重設Token")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, comment="創建時間")
+    expires_at = Column(DateTime, nullable=False, comment="過期時間")
+    is_used = Column(Boolean, default=False, nullable=False, comment="是否已使用")
+    
+    def __repr__(self):
+        return f"<PasswordResetToken(email={self.email}, token={self.token[:8]}..., is_used={self.is_used})>"
+
+class Scores(Base):
+    __tablename__ = 'sessionid_score'
+    session_id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    # --- 修正: nulllable -> nullable ---
+    total_score = Column(String, nullable=False, comment="總分")
+    organization_efficient_score = Column(String, nullable=False, comment="組織效率")
+    clinical_judgement_score = Column(String, nullable=False, comment="臨床判斷")
+    diet_edu_score = Column(String, nullable=False, comment="飲食衛教")
+    medication_edu_score = Column(String, nullable=False, comment="藥物衛教")
+    npo_edu_score = Column(String, nullable=False, comment="禁水衛教")
+    special_med_handling_score = Column(String, nullable=False, comment="特殊藥物處理")
+    
+class Summary(Base):
+    __tablename__ = 'sessionid_summary'
+    session_id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    # --- 修正: nulllable -> nullable ---
+    total_summary = Column(String, nullable=False, comment="總結")
+    organization_efficient_summary = Column(String, nullable=False, comment="組織效率")
+    clinical_judgement_summary = Column(String, nullable=False, comment="臨床判斷")
+    diet_edu_summary = Column(String, nullable=False, comment="飲食衛教")
+    medication_edu_summary = Column(String, nullable=False, comment="藥物衛教")
+    npo_edu_summary = Column(String, nullable=False, comment="禁水衛教")
+    special_med_handling_summary = Column(String, nullable=False, comment="特殊藥物處理")
+
+class ConversationSummary(Base):
+    __tablename__ = 'conversation_summary'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String, nullable=False, index=True) # 加上索引以加快查詢
+    summary = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))  
 
 # --- 資料庫初始化函數 ---
 def init_database():
@@ -169,7 +207,7 @@ def find_history(username: str):
         # 查詢使用者的所有對話session
         user_sessions = db.query(SessionUserMap).filter(
             SessionUserMap.username == username
-        ).all()
+        ).order_by(SessionUserMap.created_at.desc()).all() # 按照創建時間排序
         
         if not user_sessions:
             return []
@@ -190,12 +228,14 @@ def find_history(username: str):
             # 組合歷史記錄資料
             history_item = {
                 "session_id": session.session_id,
-                "time": latest_chat.time if latest_chat else session.created_at,
+                "time": session.created_at,
                 "agent_code": session.agent_code,
                 "gender": agent_setting.gender if agent_setting else "未設定",
                 "age": agent_setting.age if agent_setting else "未設定",
                 "score": session.score,
-                "is_completed": session.is_completed
+                "is_completed": session.is_completed,
+                # 新增 level 欄位，對應前端的 level
+                "level": agent_setting.med_complexity if agent_setting else "未知"
             }
             
             history_list.append(history_item)
@@ -236,37 +276,6 @@ def update_conversation_score(session_id: str, score: float, is_completed: bool 
     finally:
         db.close()
 
-def create_user_session(username: str, agent_code: str, session_id: str = None):
-    """
-    建立使用者對話session
-    """
-    db = SessionLocal()
-    try:
-        if session_id is None:
-            session_id = str(uuid.uuid4())
-        
-        # 檢查是否已存在
-        existing_session = db.query(SessionUserMap).filter(
-            SessionUserMap.session_id == session_id
-        ).first()
-        
-        if not existing_session:
-            user_session = SessionUserMap(
-                session_id=session_id,
-                username=username,
-                agent_code=agent_code
-            )
-            db.add(user_session)
-            db.commit()
-        
-        return session_id
-        
-    except Exception as e:
-        print(f"建立使用者session錯誤: {e}")
-        db.rollback()
-        return session_id or str(uuid.uuid4())
-    finally:
-        db.close()
 
 def get_user_sessions_summary(username: str):
     """
@@ -300,6 +309,149 @@ def get_user_sessions_summary(username: str):
     finally:
         db.close()
 
+# 密碼重設函數
+def create_password_reset_token(email: str) -> str:
+    """創建重設密碼token"""
+    db = SessionLocal()
+    try:
+        # 生成安全的令牌
+        token = secrets.token_urlsafe(32)
+        
+        # 設定過期時間（1小時）
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+        
+        # 先刪除舊Token
+        db.query(PasswordResetToken).filter(
+            PasswordResetToken.email == email,
+            PasswordResetToken.is_used == False
+        ).delete()
+        
+        # 創建新token
+        reset_token = PasswordResetToken(
+            email=email,
+            token=token,
+            expires_at=expires_at
+        )
+        
+        db.add(reset_token)
+        db.commit()
+        
+        return token
+        
+    except Exception as e:
+        print(f"創建密碼重設的token發生錯誤: {e}")
+        db.rollback()
+        return None
+    finally:
+        db.close()
+
+def verify_password_reset_token(token: str) -> str:
+    """驗證密碼重設Token，回傳對應的email"""
+    db = SessionLocal()
+    try:
+        # 查找令牌
+        reset_token = db.query(PasswordResetToken).filter(
+            PasswordResetToken.token == token,
+            PasswordResetToken.is_used == False,
+            PasswordResetToken.expires_at > datetime.now(timezone.utc)
+        ).first()
+        
+        if reset_token:
+            return reset_token.email
+        else:
+            return None
+            
+    except Exception as e:
+        print(f"驗證密碼重設的token發生錯誤: {e}")
+        return None
+    finally:
+        db.close()
+
+def use_password_reset_token(token: str) -> bool:
+    """標記Token為已使用過"""
+    db = SessionLocal()
+    try:
+        reset_token = db.query(PasswordResetToken).filter(
+            PasswordResetToken.token == token
+        ).first()
+        
+        if reset_token:
+            reset_token.is_used = True
+            db.commit()
+            return True
+        else:
+            return False
+            
+    except Exception as e:
+        print(f"使用密碼重設Token錯誤: {e}")
+        db.rollback()
+        return False
+    finally:
+        db.close()
+
+def cleanup_expired_tokens():
+    """清除過期Token"""
+    db = SessionLocal()
+    try:
+        expired_tokens = db.query(PasswordResetToken).filter(
+            PasswordResetToken.expires_at < datetime.now(timezone.utc)
+        ).delete()
+        
+        db.commit()
+        print(f"清理了 {expired_tokens} 過期Token")
+        
+    except Exception as e:
+        print(f"清理過期Token錯誤: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+def save_db_conversation_summary(session_id: str, summary: str):
+    """將對話總結儲存到資料庫"""
+    db = SessionLocal()
+    try:
+        summary_log = ConversationSummary(
+            session_id=session_id,
+            summary=summary
+        )
+        db.add(summary_log)
+        db.commit()
+        print(f"成功儲存 Session {session_id} 的總結")
+    except Exception as e:
+        print(f"儲存對話總結錯誤: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+def get_latest_conversation_summary(session_id: str):
+    """從資料庫獲取最新的對話總結"""
+    db = SessionLocal()
+    try:
+        latest_summary = db.query(ConversationSummary).filter(
+            ConversationSummary.session_id == session_id
+        ).order_by(ConversationSummary.created_at.desc()).first()
+        
+        return latest_summary.summary if latest_summary else None
+    except Exception as e:
+        print(f"獲取最新對話總結錯誤: {e}")
+        return None
+    finally:
+        db.close()
+
+def get_user_message_count(session_id: str) -> int:
+    """獲取指定 session 中使用者的訊息數量"""
+    db = SessionLocal()
+    try:
+        count = db.query(ChatLog).filter(
+            ChatLog.session_id == session_id,
+            ChatLog.role == 'user'
+        ).count()
+        return count
+    except Exception as e:
+        print(f"獲取使用者訊息數量錯誤: {e}")
+        return 0
+    finally:
+        db.close()
 
 # 自動初始化資料庫
 init_database()
