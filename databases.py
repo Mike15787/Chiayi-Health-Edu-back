@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Boolean, UniqueConstraint
 from sqlalchemy.orm import sessionmaker, declarative_base
 from datetime import datetime, timezone, timedelta
 import uuid
@@ -36,13 +36,16 @@ class ChatLog(Base):
     time = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class AnswerLog(Base):
-    __tablename__ = 'answer'
+    __tablename__ = 'answer_log'
     id = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(String, default=lambda: str(uuid.uuid4()))
-    agent_code = Column(String, nullable=False)
-    role = Column(String, nullable=False)
-    text = Column(Text, nullable=False)
-    time = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    session_id = Column(String, nullable=False, index=True)
+    scoring_item_id = Column(String, nullable=False, comment="來自 scoring_criteria.json 的 id")
+    score = Column(Integer, nullable=False, comment="評分結果 (1=達成, 0=未達成)")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+     # 確保同一個 session 的同一個項目只有一筆紀錄
+    __table_args__ = (
+        UniqueConstraint('session_id', 'scoring_item_id', name='_session_item_uc'),
+    )
     
 class AgentSettings(Base):
     __tablename__ = 'agent_settings'
@@ -55,10 +58,12 @@ class AgentSettings(Base):
     med_complexity = Column(String)
     med_code = Column(String)
     special_status = Column(Text)
-    check_day = Column(String)
+    check_day = Column(Integer)
     check_time = Column(String)
     check_type = Column(String)
     low_cost_med = Column(String)
+    payment_fee = Column(String, default="未提供", comment="繳交費用")
+    laxative_experience = Column(String, default="未提供", comment="過去瀉藥經驗")
 
 # 修改 SessionUserMap 模型，添加評分功能
 class SessionUserMap(Base):
@@ -114,6 +119,20 @@ class ConversationSummary(Base):
     summary = Column(Text, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))  
 
+#新增一個table 用來存放預先計算好的這一個session的答案
+class PrecomputedSessionAnswer(Base):
+    __tablename__ = 'precomputed_session_ans'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String, nullable=False, unique=True, index=True) # 加上索引以加快查詢
+    exam_day = Column(String, nullable=False, comment="檢查日")
+    prev_1d = Column(String, nullable=False, comment="檢查前一天")
+    prev_2d = Column(String, nullable=False, comment="檢查前兩天")
+    prev_3d = Column(String, nullable=False, comment="檢查前三天") #?月?號
+    second_dose_time = Column(String, nullable=False, comment="第二包藥劑服用時間") #凌晨?點
+    npo_start_time = Column(String, nullable=False, comment="禁水時間") #上午?點
+    
+
+
 # --- 資料庫初始化函數 ---
 def init_database():
     """初始化資料庫，創建所有表格"""
@@ -151,6 +170,44 @@ def get_conversation_history(session_id: str = None, limit: int = 20) -> str:
     finally:
         db.close()
 
+def get_latest_user_messages(session_id: str, count: int = 2) -> list[str]:
+    """獲取指定 session 中使用者最新的幾條訊息"""
+    db = SessionLocal()
+    try:
+        messages = db.query(ChatLog.text).filter(
+            ChatLog.session_id == session_id,
+            ChatLog.role == 'user'
+        ).order_by(ChatLog.id.desc()).limit(count).all()
+        # all() returns a list of tuples, e.g., [('message1',), ('message2',)]
+        # We need to extract the first element of each tuple and reverse the list
+        # so the messages are in chronological order.
+        return [msg[0] for msg in reversed(messages)]
+    except Exception as e:
+        print(f"獲取使用者最新訊息錯誤: {e}")
+        return []
+    finally:
+        db.close()
+        
+def get_latest_chat_history_for_scoring(session_id: str, limit: int = 4) -> list[dict]:
+    """
+    獲取指定 session 的最新對話歷史，包含 user 和 patient 的訊息，用於評分。
+    返回一個字典列表，格式為 [{'role': 'user', 'message': '...'}, ...]。
+    """
+    db = SessionLocal()
+    try:
+        # 查詢最新的 limit 筆記錄
+        logs = db.query(ChatLog.role, ChatLog.text)\
+                 .filter(ChatLog.session_id == session_id)\
+                 .order_by(ChatLog.time.desc())\
+                 .limit(limit)\
+                 .all()
+        
+        # 結果是從最新到最舊的，我們需要反轉它以保持時間順序
+        history = [{"role": role, "message": message} for role, message in reversed(logs)]
+        return history
+    finally:
+        db.close()
+        
 def save_chat_message(role: str, text: str, session_id: str = None, agent_code: str = "default"):
     """保存聊天訊息到資料庫"""
     db = SessionLocal()
@@ -450,6 +507,26 @@ def get_user_message_count(session_id: str) -> int:
     except Exception as e:
         print(f"獲取使用者訊息數量錯誤: {e}")
         return 0
+    finally:
+        db.close()
+
+def get_conversation_history_for_user(session_id: str = None, limit: int = 20) -> list[str]:
+    """只獲取使用者(user)的對話歷史，返回文本列表"""
+    db = SessionLocal()
+    try:
+        query = db.query(ChatLog).filter(ChatLog.role == 'user')
+        
+        if session_id:
+            query = query.filter(ChatLog.session_id == session_id)
+        
+        history_rows = query.order_by(ChatLog.id.desc()).limit(limit).all()
+        
+        # 返回文本列表，最新的在前面
+        return [row.text for row in history_rows]
+
+    except Exception as e:
+        print(f"獲取使用者對話歷史錯誤: {e}")
+        return []
     finally:
         db.close()
 

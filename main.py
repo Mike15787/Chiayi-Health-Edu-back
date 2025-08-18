@@ -1,6 +1,7 @@
-from fastapi import FastAPI, Request, File, UploadFile, HTTPException, Query, Path
+from fastapi import FastAPI, Request, File, UploadFile, HTTPException, Query, Path, Depends
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -12,7 +13,7 @@ import edge_tts
 import whisper
 import torch
 import uuid
-import datetime
+from datetime import datetime, timedelta
 import logging
 import asyncio
 import random
@@ -21,6 +22,8 @@ import traceback
 from Login import auth_router
 from FindHistory import history_router
 from Scoring import score_router
+from scoring_service import ScoringService
+from utils import generate_llm_response
 
 # 導入資料庫相關模組
 from databases import (
@@ -36,7 +39,10 @@ from databases import (
     AnswerLog,
     UserLogin,
     AgentSettings,
-    SessionUserMap
+    SessionUserMap,
+    get_latest_user_messages,
+    get_latest_chat_history_for_scoring,
+    PrecomputedSessionAnswer
 )
 
 from agentset import insert_agent_data
@@ -58,9 +64,14 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 # --- 線程池用於處理 AI 任務 ---
 executor = ThreadPoolExecutor(max_workers=4)
 
+# --- 新增：初始化評分服務 ---
+scoring_service: ScoringService = None
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """應用生命週期管理"""
+    global scoring_service
+    
     # 啟動時執行
     logger.info("AI Voice Chat API 啟動中...")
     
@@ -73,6 +84,11 @@ async def lifespan(app: FastAPI):
     
     # 創建無聲音頻檔案
     create_silence_audio()
+    
+    # --- 新增：初始化 ScoringService ---
+    logger.info("Initializing RAG Scoring Service...")
+    scoring_service = ScoringService()
+    logger.info("RAG Scoring Service initialized.")
     
     # 清理舊的臨時檔案
     for temp_file in os.listdir(TEMP_DIR):
@@ -177,10 +193,12 @@ class AgentInfo(BaseModel):
     med_complexity: str
     med_code: str
     special_status: str
-    check_day: str
     check_time: str
+    check_day: Optional[int] = None
     check_type: str
     low_cost_med: str
+    payment_fee: str
+    laxative_experience: str
     
 # 修改 SessionInfo 模型，增加 agent_code
 class SessionInfo(BaseModel):
@@ -255,21 +273,20 @@ class ConversationManager:
         try:
             logger.info(f"開始為 Session {session_id} 進行對話總結...")
             # 獲取較長的歷史記錄用於總結 (即使已有總結，也基於更長的歷史生成新總結)
-            full_history = get_conversation_history(session_id, limit=50) 
+            recent_user_inputs = get_latest_user_messages(session_id, count=3)
             
-            if not full_history or len(full_history) < 100: # 如果歷史太短，不進行總結
-                logger.info(f"Session {session_id} 歷史記錄太短，跳過總結。")
+            # 如果訊息少於2條，總結的意義不大，直接跳過
+            if not recent_user_inputs or len(recent_user_inputs) < 2:
+                logger.info(f"Session {session_id} 使用者輸入太少，跳過總結。")
                 return
+            
+            # 將訊息列表組合成一個字串，方便放入 prompt
+            inputs_text = "\n".join(f"- {msg}" for msg in recent_user_inputs)
 
             summary_prompt = (
-                "請將以下的對話歷史總結成一段簡潔的敘述，保留重要的背景信息和關鍵細節。\n"
-                "重點包括：\n"
-                "1. 病患的基本情況和主要關切\n"
-                "2. 醫生提供的重要建議或說明\n"
-                "3. 病患的主要疑問和已獲得的答案\n"
-                "4. 任何重要的醫療細節\n\n"
-                "請用繁體中文回應，控制在200字以內。\n\n"
-                f"對話歷史：\n{full_history}\n\n"
+                "你是一個對話助理，請將以下使用者最近的幾句話，濃縮成一個簡潔的要點，說明使用者目前最關心的問題或確認的資訊。\n"
+                "總結必須非常簡短，不超過50個字，只包含核心資訊。\n\n"
+                f"使用者最近的對話：\n{inputs_text}\n\n"
                 "總結："
             )
             
@@ -277,6 +294,10 @@ class ConversationManager:
             
             if summary and "抱歉" not in summary:
                 # 儲存總結
+                # 1. 將生成的總結印到終端機
+                logger.info(f"--- [DEBUG] Generated Summary for Session {session_id} ---")
+                logger.info(summary)
+                logger.info("---------------------------------------------------------")
                 self.save_conversation_summary(session_id, summary)
                 logger.info(f"Session {session_id} 的對話總結已成功生成並儲存。")
             else:
@@ -286,43 +307,6 @@ class ConversationManager:
             logger.error(f"背景總結任務錯誤 for Session {session_id}: {e}")
             logger.error(traceback.format_exc())
 
-# --- 工具函數 ---
-async def generate_llm_response(prompt: str) -> str:
-    """生成 LLM 回應"""
-    try:
-        ollama_payload = {
-            "model": "gemma3:4b",
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": 0.2,
-                "top_p": 0.9,
-                "max_tokens": 500
-            }
-        }
-        
-        response = requests.post(
-            "http://localhost:11434/api/generate", 
-            json=ollama_payload, 
-            timeout=30
-        )
-        
-        if response.status_code == 200:
-            result = response.json()
-            return result.get('response', '抱歉，我無法回應您的問題。')
-        else:
-            logger.error(f"Ollama API 錯誤: {response.status_code} - {response.text}")
-            return "抱歉，AI 服務暫時無法使用。"
-            
-    except requests.exceptions.ConnectionError:
-        logger.error("無法連接到 Ollama API，請確認 Ollama 服務是否運行")
-        return "抱歉，AI 服務未啟動。"
-    except requests.exceptions.Timeout:
-        logger.error("Ollama API 超時")
-        return "抱歉，回應時間過長，請稍後再試。"
-    except Exception as e:
-        logger.error(f"LLM 生成錯誤: {e}")
-        return "抱歉，處理您的請求時發生錯誤。"
 
 async def generate_tts_audio(text: str, voice: str = None) -> str:
     """使用 edge-tts 生成 TTS 音頻檔案"""
@@ -376,7 +360,7 @@ async def generate_tts_audio(text: str, voice: str = None) -> str:
         return "/audio/silence.wav"
 
 def create_silence_audio():
-    """創建無聲音頻檔案作為備用"""
+    """創建無聲音頻檔案作為備用 生成錯誤時可保證不整個系統停擺"""
     try:
         import numpy as np
         from scipy.io import wavfile
@@ -395,6 +379,74 @@ def create_silence_audio():
     
     except Exception as e:
         logger.warning(f"無法創建無聲音頻檔案: {e}")
+
+def precompute_and_save_answers(session_id: str, agent_code: str, db: Session):
+    """根據 agent 設定預先計算並儲存答案"""
+    try:
+        agent_settings = db.query(AgentSettings).filter(AgentSettings.agent_code == agent_code).first()
+        if not agent_settings:
+            logger.error(f"[{session_id}] Cannot precompute answers, agent_settings not found for {agent_code}")
+            return
+
+        # 1. 日期計算
+        today = datetime.now()
+        check_day_offset = agent_settings.check_day
+        exam_date = today + timedelta(days=check_day_offset)
+        
+        def format_date(d):
+            return f"{d.month}月{d.day}日"
+
+        exam_day_str = format_date(exam_date)
+        prev_1d_str = format_date(exam_date - timedelta(days=1))
+        prev_2d_str = format_date(exam_date - timedelta(days=2))
+        prev_3d_str = format_date(exam_date - timedelta(days=3))
+
+        # 2. 判斷真實檢查類型
+        # 根據模擬答案，即使 agent 不知道，我們也基於費用判斷
+        actual_check_type = "一般"
+        if agent_settings.payment_fee and '4500' in agent_settings.payment_fee:
+            actual_check_type = "無痛"
+        
+        # 3. 計算第二包藥劑服用時間
+        check_time_str = agent_settings.check_time # e.g., "上午11:20"
+        hour = int(check_time_str.split(':')[0][-2:]) # 取得小時
+        
+        second_dose_time = "凌晨7點" # 預設下午
+        if "上午" in check_time_str:
+            if hour < 10:
+                second_dose_time = "凌晨3點"
+            elif 10 <= hour < 12:
+                second_dose_time = "凌晨4點"
+        
+        # 4. 計算禁水時間
+        npo_hours_before = 3 if actual_check_type == "無痛" else 2
+        # 將 "上午11:20" 轉換為 datetime 物件
+        check_time_obj = datetime.strptime(f"{exam_date.strftime('%Y-%m-%d')} {hour}:{check_time_str.split(':')[1]}", '%Y-%m-%d %H:%M')
+        if "下午" in check_time_str and hour != 12:
+             check_time_obj += timedelta(hours=12)
+
+        npo_start_obj = check_time_obj - timedelta(hours=npo_hours_before)
+        npo_start_time = npo_start_obj.strftime("上午%I:%M").replace("AM","").replace(" 0","") # 格式化為 "上午8:20"
+
+        # 5. 存入資料庫
+        new_precomputed = PrecomputedSessionAnswer(
+            session_id=session_id,
+            exam_day=exam_day_str,
+            prev_1d=prev_1d_str,
+            prev_2d=prev_2d_str,
+            prev_3d=prev_3d_str,
+            second_dose_time=second_dose_time,
+            npo_start_time=npo_start_time,
+            actual_check_type=actual_check_type
+        )
+        db.merge(new_precomputed) # merge 可以處理已存在的情況
+        db.commit()
+        logger.info(f"[{session_id}] Precomputed answers saved successfully.")
+
+    except Exception as e:
+        logger.error(f"[{session_id}] Error in precompute_and_save_answers: {e}")
+        db.rollback()
+
 
 def transcribe_audio(audio_path: str) -> dict:
     """使用 Whisper 轉錄音頻"""
@@ -423,54 +475,76 @@ def transcribe_audio(audio_path: str) -> dict:
         logger.error(traceback.format_exc())
         return {"text": "", "confidence": 0.0, "language": "zh"}
 
-def build_optimized_prompt(user_text: str, history: str, agent_settings: AgentSettings = None) -> str:
+def build_optimized_prompt(user_text: str, history: str, agent_settings_dict: dict = None) -> str:
     """構建優化的 prompt，包含 agent 設定"""
     
-    check_day = agent_settings.get('check_day', '幾')
+    '''我的錯 應該要把計算後的檢查時間加入到prompt裡面 這才是正確的'''
     
-    # 基礎角色設定，動態插入天數
-    base_role_prompt = (
-        f"你是一個 {check_day} 天後要做大腸鏡檢查的病患。今天你剛拿到醫生開給你的清腸藥(保可淨)，"
-        "接下來你要去問護理師(使用者)清腸劑怎麼用並接受護理師(使用者)的衛教。\n"
-        "你需要聆聽護理師(使用者)的衛教資訊，給予適當的回應，讓他知道你有在聽。\n"
-        "例如，你可以說「好的」、「我知道了」、「喔~原來是這樣」。\n"
-        "如果對衛教內容有疑問，特別是跟你個人情況相關的，要記得提出來。\n"
-        "回答內容限制在20字內。\n"
-    )
-    # 暫時先跳過特殊狀況
-    # 特殊狀況：{agent_settings['special_status']}
+   
+    # --- 1. 計算實際檢查日期 ---
+    check_day_offset = agent_settings_dict.get('check_day', 0)
+    today = datetime.now()
+    exam_date = today + timedelta(days=check_day_offset)
+    # 使用 %-m 和 %-d (在Linux/macOS) 或 %#m 和 %#d (在Windows) 來去除前導零
+    # 為了跨平台，我們手動處理
+    exam_day_str = f"{exam_date.month}月{exam_date.day}日"
+    today_str = f"{today.month}月{today.day}日"
     
-    if agent_settings:
-        personal_info = f"""
-你的個人資訊：
-- 性別：{agent_settings['gender']}
-- 年齡：{agent_settings['age']}
-- 疾病狀況：{agent_settings['disease']}
-- 目前用藥：{agent_settings['med_info']}
-- 離檢查日期：{agent_settings['check_day']}
-- 檢查時間：{agent_settings['check_time']}
-- 檢查類型：{agent_settings['check_type']}
-- 低渣食物購買：{agent_settings['low_cost_med']}
-
+    # --- 2. 構建基礎角色和特殊指令 ---
+    # 使用列表來組合指令，更具可讀性和擴展性
+    instructions = [
+        f"你是一個病患，預計在 {check_day_offset} 天後（也就是 {exam_day_str}）要做大腸鏡檢查。今天（{today_str}）你剛拿到醫生開的清腸藥（保可淨），正要向護理師（使用者）請教如何使用及相關衛教事宜。",
+        "你需要仔細聆聽護理師的衛教內容，並給予簡短、自然的回應，讓他知道你有在聽。",
+        "你的回答應盡量簡潔，通常在10個字以內。"
+    ]
+    
+    # 處理特殊狀況
+    special_status = agent_settings_dict.get('special_status', '無')
+    if "不知道檢查型態" in special_status:
+        instructions.append(
+            "【特殊任務】由於你不確定自己的檢查類型，你必須在對話中主動詢問護理師：『我的檢查是一般檢查還是無痛的？需要麻醉嗎？』"
+        )
+    # 未來可以繼續增加 elif 條件來處理其他 special_status
+    # elif "情緒問題" in special_status:
+    #     instructions.append("【特殊任務】你的情緒比較焦慮，可能會重複確認某些細節。")
+    
+    base_role_prompt = "\n".join(instructions)
+    
+    # --- 3. 組合個人資訊 ---
+    personal_info = f"""
+---
+你的個人資訊如下，請根據這些資訊與護理師互動：
+- 性別：{agent_settings_dict.get('gender', '未提供')}
+- 年齡：{agent_settings_dict.get('age', '未提供')}
+- 疾病史：{agent_settings_dict.get('disease', '未提供')}
+- 目前用藥：{agent_settings_dict.get('med_info', '未提供')}
+- 預計檢查日期：{exam_day_str} ({check_day_offset} 天後)
+- 預計檢查時間：{agent_settings_dict.get('check_time', '未提供')}
+- 檢查類型：{agent_settings_dict.get('check_type', '未提供')}
+- 繳交費用：{agent_settings_dict.get('payment_fee', '未提供')}
+- 過去使用瀉藥經驗：{agent_settings_dict.get('laxative_experience', '未提供')}
+- 是否需要代購低渣飲食：{agent_settings_dict.get('low_cost_med', '未提供')}
+---
 """
-        system_prompt = base_role_prompt + personal_info
-    else:
-        system_prompt = base_role_prompt
+    system_prompt = base_role_prompt + personal_info
     
     # --- MODIFIED (Requirement 4): 簡化 prompt 組合 ---
     # history 變數現在可能是「最近的對話」或「之前的對話總結」，邏輯保持不變
-    if history.strip():
+    # --- 4. 組合最終的 Prompt ---
+    if history and history.strip():
         prompt = (
             f"{system_prompt}\n\n"
+            "以下是你們之前的對話紀錄：\n"
             f"{history}\n\n"
-            f"使用者：{user_text}\n"
-            f"你："
+            f"護理師：{user_text}\n"
+            "你："
         )
     else:
         prompt = (
             f"{system_prompt}\n\n"
-            f"使用者：{user_text}\n"
-            f"你："
+            "現在，對話開始。\n"
+            f"護理師：{user_text}\n"
+            "你："
         )
     
     return prompt
@@ -495,6 +569,18 @@ def get_agent_code_by_session(session_id: str) -> Optional[str]:
     finally:
         db.close()
 
+def get_agent_settings_as_dict(agent_code: str) -> Optional[dict]:
+    """根據 agent_code 獲取 AgentSettings 並返回一個字典"""
+    db = SessionLocal()
+    try:
+        agent_settings_obj = db.query(AgentSettings).filter(AgentSettings.agent_code == agent_code).first()
+        if agent_settings_obj:
+            # --- 核心轉換邏輯 ---
+            # 將 SQLAlchemy 物件轉換為字典
+            return {c.key: getattr(agent_settings_obj, c.key) for c in agent_settings_obj.__table__.columns}
+        return None
+    finally:
+        db.close()
 
 # --- API 端點 ---
 
@@ -698,9 +784,22 @@ async def chat_api(req: ChatRequest):
         # --- NEW (Requirement 2): 觸發非同步背景總結任務 ---
         # 這個檢查和任務創建不會阻塞後續的回應生成流程
         if await conversation_manager.should_summarize(session_id):
-            logger.info(f"觸發 Session {session_id} 的背景總結任務...")
+            logger.info(f"觸發 Session {session_id} 的背景任務...")
             # 使用 asyncio.create_task 將總結任務放到背景執行
             asyncio.create_task(conversation_manager.summarize_conversation(session_id))
+            
+            # 評分任務
+            recent_chat_snippet = get_latest_chat_history_for_scoring(session_id, limit=6)
+            if recent_chat_snippet:
+                # 必須在背景任務中創建新的 DB session
+                async def scoring_task():
+                    db_task = SessionLocal()
+                    try:
+                        # 將完整的對話片段傳遞給評分服務
+                        await scoring_service.process_user_inputs_for_scoring(session_id, recent_chat_snippet, db_task)
+                    finally:
+                        db_task.close()
+                asyncio.create_task(scoring_task())
         
         # --- 主要流程繼續 ---
         
@@ -708,7 +807,7 @@ async def chat_api(req: ChatRequest):
         if not agent_code:
             raise HTTPException(status_code=400, detail="无法获取 agent_code")
         
-        agent_settings = get_agent_settings(agent_code)
+        agent_settings = get_agent_settings_as_dict(agent_code)
         if not agent_settings:
             raise HTTPException(status_code=404, detail=f"找不到 agent_code: {agent_code} 的设定")
         
@@ -801,7 +900,7 @@ async def health_check():
     """詳細健康檢查"""
     return {
         "status": "healthy",
-        "timestamp": datetime.datetime.now().isoformat(),
+        "timestamp": datetime.now().isoformat(),
         "models": {
             "edge_tts": True,
             "whisper_initialized": whisper_model is not None
@@ -872,10 +971,12 @@ async def agent_info_find(
             med_complexity=agent_setting.med_complexity or "",
             med_code=agent_setting.med_code or "",
             special_status=agent_setting.special_status or "",
-            check_day=agent_setting.check_day or "",
+            check_day=agent_setting.check_day,
             check_time=agent_setting.check_time or "",
             check_type=agent_setting.check_type or "",
-            low_cost_med=agent_setting.low_cost_med or ""
+            low_cost_med=agent_setting.low_cost_med or "",
+            payment_fee=agent_setting.payment_fee or "",
+            laxative_experience=agent_setting.laxative_experience or ""
         )
         
         logger.info(f"成功返回 AgentSettings 資料: {agent_code}")
@@ -896,7 +997,7 @@ async def agent_info_find(
 
 # 新增：create_session API
 @app.post("/create_session")
-async def create_session(session_info: SessionInfo):
+async def create_session(session_info: SessionInfo, db: Session = Depends(get_db)):
     """创建新的 session"""
     try:
         db = SessionLocal()
@@ -915,11 +1016,14 @@ async def create_session(session_info: SessionInfo):
             session_id=session_info.session_id,
             username=session_info.username,
             agent_code=session_info.agent_code,
-            created_at=datetime.datetime.now()
+            created_at=datetime.now()
         )
         
         db.add(new_session)
         db.commit()
+        
+        # --- 新增：觸發預計算 ---
+        precompute_and_save_answers(session_info.session_id, session_info.agent_code, db)
         
         logger.info(f"创建新 session: {session_info.session_id}")
         
@@ -931,6 +1035,7 @@ async def create_session(session_info: SessionInfo):
         }
         
     except Exception as e:
+        db.rollback() # 出錯時回滾
         logger.error(f"创建 session 错误: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"创建 session 失败: {str(e)}")

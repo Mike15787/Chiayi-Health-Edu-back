@@ -4,6 +4,11 @@ from databases import SessionLocal, AgentSettings
 # agent_code 表示目前難度
 # med_code 表示是否有特殊用藥
 
+# 在特殊設定(special_status)包含 "不知道檢查型態" 目前check_type 會需要要再加入"不知道" 
+# 新增欄位 繳交費用 800/4500
+
+# 新增欄位 過去有沒有用過瀉藥經驗
+
 data_list = [
     {
         "agent_code": "A1",
@@ -14,10 +19,12 @@ data_list = [
         "med_complexity": "低(<5項)",
         "med_code": "抗凝血劑 S1",
         "special_status": "無",
-        "check_day": "10天",
+        "check_day": 10,
         "check_time": "上午08:10",
         "check_type": "無痛檢查",
-        "low_cost_med": "無"
+        "low_cost_med": "無",
+        "payment_fee": "4500", 
+        "laxative_experience": "無"
     },
     {
         "agent_code": "A2",
@@ -28,10 +35,12 @@ data_list = [
         "med_complexity": "低(<5項)",
         "med_code": "無特殊用藥N",
         "special_status": "情緒問題",
-        "check_day": "03天",
+        "check_day": 3,
         "check_time": "上午10:00",
         "check_type": "無痛檢查",
-        "low_cost_med": "無"
+        "low_cost_med": "無",
+        "payment_fee": "4500", 
+        "laxative_experience": "無"
     },
     {
         "agent_code": "A3",
@@ -42,10 +51,12 @@ data_list = [
         "med_complexity": "低(<5項)",
         "med_code": "抗血小板藥物 S2",
         "special_status": "不知道檢查型態",
-        "check_day": "07天",
+        "check_day": 7,
         "check_time": "上午11:20",
         "check_type": "無痛檢查",
-        "low_cost_med": "無"
+        "low_cost_med": "無",
+        "payment_fee": "4500", 
+        "laxative_experience": "無"
     },
     {
         "agent_code": "A4",
@@ -56,10 +67,12 @@ data_list = [
         "med_complexity": "低(<5項)",
         "med_code": "高血壓藥物 X1, 緩解便秘用藥 S4",
         "special_status": "無",
-        "check_day": "05天",
+        "check_day": 5,
         "check_time": "上午12:00",
         "check_type": "一般檢查",
-        "low_cost_med": "無"
+        "low_cost_med": "無",
+        "payment_fee": "800", 
+        "laxative_experience": "有"
     },
     {
         "agent_code": "A5",
@@ -70,10 +83,12 @@ data_list = [
         "med_complexity": "低(<5項)",
         "med_code": "降血糖藥 S3",
         "special_status": "無",
-        "check_day": "14天",
+        "check_day": 14,
         "check_time": "下午14:30",
         "check_type": "一般檢查",
-        "low_cost_med": "無"
+        "low_cost_med": "無",
+        "payment_fee": "800", 
+        "laxative_experience": "無"
     },
     {
         "agent_code": "B1",
@@ -84,10 +99,12 @@ data_list = [
         "med_complexity": "中(5-9項)",
         "med_code": "無特殊用藥 N",
         "special_status": "無",
-        "check_day": "10天",
+        "check_day": 10,
         "check_time": "上午11:20",
         "check_type": "無痛檢查",
-        "low_cost_med": "無"
+        "low_cost_med": "無",
+        "payment_fee": "4500", 
+        "laxative_experience": "無"
     },
     {
         "agent_code": "B2",
@@ -98,10 +115,12 @@ data_list = [
         "med_complexity": "中(5-9項)",
         "med_code": "抗血小板藥物 S2; 高血壓藥物 X1",
         "special_status": "不知道檢查型態",
-        "check_day": "03天",
+        "check_day": 3,
         "check_time": "上午12:00",
         "check_type": "無痛檢查",
-        "low_cost_med": "無"
+        "low_cost_med": "無",
+        "payment_fee": "4500", 
+        "laxative_experience": "無"
     },
     {
         "agent_code": "B3",
@@ -112,10 +131,12 @@ data_list = [
         "med_complexity": "中(5-9項)",
         "med_code": "降血糖藥 S3",
         "special_status": "無",
-        "check_day": "07天",
+        "check_day": 7,
         "check_time": "下午14:30",
         "check_type": "一般檢查",
-        "low_cost_med": "無"
+        "low_cost_med": "無",
+        "payment_fee": "800", 
+        "laxative_experience": "無"
     },
     {
         "agent_code": "B4",
@@ -126,10 +147,12 @@ data_list = [
         "med_complexity": "中(5-9項)",
         "med_code": "緩解便秘用藥 S4; 抗凝血劑 S1",
         "special_status": "無",
-        "check_day": "05天",
+        "check_day": 5,
         "check_time": "上午08:10",
         "check_type": "一般檢查",
-        "low_cost_med": "無"
+        "low_cost_med": "無",
+        "payment_fee": "800", 
+        "laxative_experience": "有"
     },
     {
         "agent_code": "B5",
@@ -140,10 +163,12 @@ data_list = [
         "med_complexity": "中(5-9項)",
         "med_code": "抗凝血劑 S1; 抗癲癇藥物 X2",
         "special_status": "聽不懂國語",
-        "check_day": "14天",
+        "check_day": 14,
         "check_time": "上午10:00",
         "check_type": "無痛檢查",
-        "low_cost_med": "無"
+        "low_cost_med": "無",
+        "payment_fee": "4500", 
+        "laxative_experience": "無"
     },
     {
         "agent_code": "C1",
@@ -154,10 +179,12 @@ data_list = [
         "med_complexity": "高(≥10項)",
         "med_code": "高血壓藥物 X1; 降血糖藥 S3",
         "special_status": "無",
-        "check_day": "10天",
+        "check_day": 10,
         "check_time": "上午12:00",
         "check_type": "無痛檢查",
-        "low_cost_med": "無"
+        "low_cost_med": "無",
+        "payment_fee": "4500", 
+        "laxative_experience": "無"
     },
     {
         "agent_code": "C2",
@@ -168,10 +195,12 @@ data_list = [
         "med_complexity": "高(≥10項)",
         "med_code": "抗血小板藥物 S2",
         "special_status": "講台語",
-        "check_day": "03天",
+        "check_day": 3,
         "check_time": "下午14:30",
         "check_type": "無痛檢查",
-        "low_cost_med": "無"
+        "low_cost_med": "無",
+        "payment_fee": "4500", 
+        "laxative_experience": "無"
     },
     {
         "agent_code": "C3",
@@ -182,10 +211,12 @@ data_list = [
         "med_complexity": "高(≥10項)",
         "med_code": "降血糖藥 S3; 抗凝血劑 S1; 抗血小板藥物 S2",
         "special_status": "無",
-        "check_day": "07天",
+        "check_day": 7,
         "check_time": "上午10:00",
         "check_type": "一般檢查",
-        "low_cost_med": "無"
+        "low_cost_med": "無",
+        "payment_fee": "800", 
+        "laxative_experience": "無"
     },
     {
         "agent_code": "C4",
@@ -196,10 +227,12 @@ data_list = [
         "med_complexity": "高(≥10項)",
         "med_code": "緩解便秘用藥 S4; 高血壓藥物 X1",
         "special_status": "聽不懂國語",
-        "check_day": "05天",
+        "check_day": 5,
         "check_time": "上午08:10",
         "check_type": "一般檢查",
-        "low_cost_med": "無"
+        "low_cost_med": "無",
+        "payment_fee": "800", 
+        "laxative_experience": "有"
     },
     {
         "agent_code": "C5",
@@ -210,10 +243,12 @@ data_list = [
         "med_complexity": "高(≥10項)",
         "med_code": "非/無特殊用藥 N",
         "special_status": "不知道檢查型態",
-        "check_day": "14天",
+        "check_day": 14,
         "check_time": "上午11:20",
         "check_type": "一般檢查",
-        "low_cost_med": "無"
+        "low_cost_med": "無",
+        "payment_fee": "800", 
+        "laxative_experience": "無"
     }
 ]
 
@@ -227,6 +262,11 @@ def insert_agent_data():
         
         inserted_count = 0
         for item in data_list:
+            # --- 新增：資料預處理邏輯 ---
+            if "不知道檢查型態" in item.get("special_status", ""):
+                item["check_type"] = "不知道"
+            # --- 結束 ---
+            
             if item["agent_code"] not in existing_codes:
                 agent = AgentSettings(**item)
                 db.add(agent)
@@ -252,7 +292,7 @@ def show_all_agents():
         agents = db.query(AgentSettings).all()
         print(f"\n=== 資料庫中的所有病例資料 (共 {len(agents)} 筆) ===")
         for agent in agents:
-            print(f"{agent.agent_code}: {agent.gender} {agent.age} - {agent.disease}")
+            print(f"{agent.agent_code}: {agent.gender} {agent.age} - 疾病: {agent.disease} | 檢查類型: {agent.check_type} | 費用: {agent.payment_fee} | 瀉藥經驗: {agent.laxative_experience}")
     except Exception as e:
         print(f"查詢資料時發生錯誤: {e}")
     finally:
