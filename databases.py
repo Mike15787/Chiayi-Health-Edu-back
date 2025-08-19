@@ -91,26 +91,22 @@ class PasswordResetToken(Base):
 class Scores(Base):
     __tablename__ = 'sessionid_score'
     session_id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    # --- 修正: nulllable -> nullable ---
     total_score = Column(String, nullable=False, comment="總分")
-    organization_efficient_score = Column(String, nullable=False, comment="組織效率")
-    clinical_judgement_score = Column(String, nullable=False, comment="臨床判斷")
-    diet_edu_score = Column(String, nullable=False, comment="飲食衛教")
-    medication_edu_score = Column(String, nullable=False, comment="藥物衛教")
-    npo_edu_score = Column(String, nullable=False, comment="禁水衛教")
-    special_med_handling_score = Column(String, nullable=False, comment="特殊藥物處理")
+    review_med_history_score = Column(String, nullable=False, comment="檢閱藥歷分數")
+    medical_interview_score = Column(String, nullable=False, comment="醫療面談分數")
+    counseling_edu_score = Column(String, nullable=False, comment="諮商衛教分數")
+    organization_efficiency_score = Column(String, nullable=False, comment="組織效率分數")
+    clinical_judgment_score = Column(String, nullable=False, comment="臨床判斷分數")
     
 class Summary(Base):
     __tablename__ = 'sessionid_summary'
     session_id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    # --- 修正: nulllable -> nullable ---
     total_summary = Column(String, nullable=False, comment="總結")
-    organization_efficient_summary = Column(String, nullable=False, comment="組織效率")
-    clinical_judgement_summary = Column(String, nullable=False, comment="臨床判斷")
-    diet_edu_summary = Column(String, nullable=False, comment="飲食衛教")
-    medication_edu_summary = Column(String, nullable=False, comment="藥物衛教")
-    npo_edu_summary = Column(String, nullable=False, comment="禁水衛教")
-    special_med_handling_summary = Column(String, nullable=False, comment="特殊藥物處理")
+    review_med_history_summary = Column(String, nullable=False, comment="檢閱藥歷總結")
+    medical_interview_summary = Column(String, nullable=False, comment="醫療面談總結")
+    counseling_edu_summary = Column(String, nullable=False, comment="諮商衛教總結")
+    organization_efficiency_summary = Column(String, nullable=False, comment="組織效率總結")
+    clinical_judgment_summary = Column(String, nullable=False, comment="臨床判斷總結")
 
 class ConversationSummary(Base):
     __tablename__ = 'conversation_summary'
@@ -131,7 +127,15 @@ class PrecomputedSessionAnswer(Base):
     second_dose_time = Column(String, nullable=False, comment="第二包藥劑服用時間") #凌晨?點
     npo_start_time = Column(String, nullable=False, comment="禁水時間") #上午?點
     
-
+class ScoringPromptLog(Base):
+    __tablename__ = 'scoring_prompt_log'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String, nullable=False, index=True)
+    scoring_item_id = Column(String, nullable=False, index=True)
+    prompt_text = Column(Text, nullable=False, comment="發送給 LLM 的完整 Prompt")
+    llm_response = Column(Text, nullable=False, comment="LLM 返回的原始回應")
+    final_score = Column(Integer, nullable=False, comment="解析後的最終分數 (0 或 1)")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), comment="紀錄建立時間")
 
 # --- 資料庫初始化函數 ---
 def init_database():

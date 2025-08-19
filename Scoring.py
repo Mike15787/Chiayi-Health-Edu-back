@@ -1,3 +1,8 @@
+#目前需要大幅修正scoring.py的功能 目前計算總分的方式是錯誤的 需要改正
+#真正的評分方式 是我總共有5種分類 分別是檢閱藥歷(6分) 醫療面談(6分) 諮商衛教(6分) 組織效率(6分) 臨床判斷(6分)
+#然後summary也做錯了 應該要出現的是這五種分類的總結才對
+#之後要測試 是分開做總結比較快 還是單獨總結比較快 也要比較兩者的正確率
+
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, ValidationError, ConfigDict
 from sqlalchemy.orm import Session
@@ -27,36 +32,35 @@ class FinishRequest(BaseModel):
     session_id: str
     username: str
     
+# --- 修改: Pydantic ScoresModel ---
 class ScoresModel(BaseModel):
     total_score: str
-    organization_efficient_score: str # 組織效率分數
-    clinical_judgement_score: str #臨床判斷分數
-    diet_edu_score: str # 飲食衛教分數
-    medication_edu_score: str # 藥物衛教分數
-    npo_edu_score: str #禁水衛教分數 NPO = nothing by mouth，常見術語
-    special_med_handling_score: str #特殊藥物處理分數
+    review_med_history_score: str
+    medical_interview_score: str
+    counseling_edu_score: str
+    organization_efficiency_score: str
+    clinical_judgment_score: str
     
-    # This tells Pydantic to read data from object attributes (like scores.total_score)
-    # instead of just from dictionary keys.
     model_config = ConfigDict(from_attributes=True)
 
+# --- 修改: Pydantic SummaryModel ---
 class SummaryModel(BaseModel):
     total_summary: str
-    organization_efficient_summary: str
-    clinical_judgement_summary: str
-    diet_edu_summary: str
-    medication_edu_summary: str
-    npo_edu_summary: str
-    special_med_handling_summary: str
+    review_med_history_summary: str
+    medical_interview_summary: str
+    counseling_edu_summary: str
+    organization_efficiency_summary: str
+    clinical_judgment_summary: str
 
     model_config = ConfigDict(from_attributes=True)
 
+# --- 修改: Pydantic SummaryResponse ---
 class SummaryResponse(BaseModel):
     session_id: str
     agent_code: str
     username: str
-    level: str  # 來自 AgentSettings
-    case_info: str # 組合 AgentSettings 的資訊
+    level: str
+    case_info: str
     scores: ScoresModel
     summaries: SummaryModel
 
@@ -135,62 +139,61 @@ def parse_llm_json(raw_text: str) -> dict:
         logger.error(f"解析提取的 JSON 字串時失敗。錯誤: {e}. 提取的字串: '{json_str}'")
         raise  # 重新拋出異常，讓上層的 try-except 捕捉
 
-
-
-async def check_procedural_order(session_id: str, full_history: str, db: Session):
+async def calculate_organization_efficiency_score_llm(full_history: str) -> float:
     """
-    NEW: Checks if the conversation followed the correct educational sequence.
+    呼叫 gemma3:12b 來對對話流程進行 0-6 分的評分。
     """
-    logger.info(f"[{session_id}] Performing final procedural order check...")
     prompt = f"""
-    你是一個資深的衛教評分老師。請根據以下的完整對話紀錄，判斷學員(醫生)的衛教流程是否遵循了正確的順序。
-    如果流程正確，只輸出 "1"。如果流程錯誤，只輸出 "0"。不要有任何其他文字或解釋。
+    你是一位資深的臨床衛教評分老師。你的任務是根據以下的完整對話紀錄，評估學員(醫生)的衛教流程是否清晰、有條理且遵循了標準順序。
 
-    [正確的衛教順序]:
+    [正確的衛教順序標準]:
     1.  **醫療面談**: 開場問候、確認病人身份、確認檢查時間與類型。
     2.  **飲食管理**: 說明檢查前三天的低渣飲食原則。
     3.  **檢查前一天指導**: 說明無渣流質飲食、第一包清腸劑的服用時間與方法、水分補充。
     4.  **檢查當天指導**: 說明第二包清腸劑的服用時間與方法、禁水時間。
     5.  **額外補充**: 處理特殊用藥(如抗凝血劑)、說明排便理想狀態等。
 
+    [評分指南]:
+    - 6分: 完美遵循順序，衛教流暢，所有要點均在正確的階段提出。
+    - 4-5分: 大致遵循順序，可能有少數項目順序顛倒，但不影響整體理解。
+    - 2-3分: 順序較為混亂，重要衛教項目散落在對話各處，結構性不佳。
+    - 0-1分: 完全沒有順序，對話混亂，讓病人難以理解準備流程。
+
     [對話紀錄]:
     {full_history}
 
-    [判斷結果 (1 或 0)]:
+    [你的評分]:
+    請根據上述標準，給出一個 0 到 6 之間的整數分數。**請只輸出一個數字，不要有任何其他文字、符號或解釋。**
     """
-    response = await generate_llm_response(prompt, "gemma3:12b")
-    score = 1 if "1" in response.strip() else 0
     
-    # Save the result to AnswerLog
+    logger.info(f"正在請求 gemma3:12b 進行組織效率評分 (0-6)...")
+    response_text = await generate_llm_response(prompt, "gemma3:12b")
+    
     try:
-        stmt = sqlite_insert(AnswerLog).values(
-            session_id=session_id,
-            scoring_item_id='procedural_order_check',
-            score=score,
-            created_at=datetime.now()
-        )
-        on_conflict_stmt = stmt.on_conflict_do_update(
-            index_elements=['session_id', 'scoring_item_id'],
-            set_=dict(score=score)
-        )
-        db.execute(on_conflict_stmt)
-        db.commit()
-        logger.info(f"[{session_id}] Procedural order check result ({score}) saved.")
+        # 使用正則表達式從回覆中找到第一個數字
+        match = re.search(r'\d+', response_text)
+        if match:
+            score = int(match.group(0))
+            # 將分數限制在 0-6 的範圍內，防止 LLM 超出範圍
+            clamped_score = max(0, min(6, score))
+            logger.info(f"LLM 原始分數: {score}，校正後分數: {clamped_score}")
+            return float(clamped_score)
+        else:
+            logger.warning(f"無法從 LLM 回應中解析出組織效率分數: '{response_text}'。將預設為 0 分。")
+            return 0.0
     except Exception as e:
-        logger.error(f"[{session_id}] Failed to save procedural order check result: {e}")
-        db.rollback()
-
+        logger.error(f"解析組織效率分數時發生錯誤: {e}。回應: '{response_text}'。將預設為 0 分。")
+        return 0.0
 # --- API 端點 ---
 
 @score_router.post("/finish")
 async def finish_and_score_session(request: FinishRequest, db: Session = Depends(get_db)):
     """
-    結束對話，觸發評分和總結流程。
+    結束對話，觸發評分和總結流程 (包含標準及複合項目計分)。
     """
     session_id = request.session_id
     username = request.username
     
-     # 1. 驗證 Session 存在且屬於該用戶
     session_map = db.query(SessionUserMap).filter(
         SessionUserMap.session_id == session_id, 
         SessionUserMap.username == username
@@ -198,119 +201,136 @@ async def finish_and_score_session(request: FinishRequest, db: Session = Depends
     if not session_map:
         raise HTTPException(status_code=404, detail="指定的 Session 或 Username 不存在")
     
-    # 檢查 `Scores` 表中是否已存在該 session_id 的記錄
-    existing_score = db.query(Scores).filter(Scores.session_id == session_id).first()
-    if existing_score:
-        logger.warning(f"Session {session_id} 的評分已存在，將跳過 LLM 呼叫。")
+    if db.query(Scores).filter(Scores.session_id == session_id).first():
+        logger.warning(f"Session {session_id} 的評分已存在，將跳過重新計算。")
         return {"status": "already_scored", "session_id": session_id}
     
-    logger.info(f"開始為 Session {session_id} 匯總 RAG 評分...")
-    
-    chat_history_rows = db.query(ChatLog).filter(ChatLog.session_id == session_id).order_by(ChatLog.time.asc()).all()
-    
-    formatted_history = ""
-    for entry in chat_history_rows:
-        role_name = "User(醫生)" if entry.role == 'user' else "Agent(病人)"
-        formatted_history += f"{role_name}: {entry.text}\n"
-        
-    await check_procedural_order(session_id, formatted_history, db)
+    logger.info(f"開始為 Session {session_id} 計算最終分數 (包含複合規則)...")
 
-    logger.info(f"[{session_id}] Aggregating final scores from AnswerLog...")
-    
-    passed_items_from_db  = db.query(AnswerLog).filter(
+    # 1. 獲取所有得分項目的 ID，放入一個 Set 以便快速查詢
+    passed_items_query = db.query(AnswerLog.scoring_item_id).filter(
         AnswerLog.session_id == session_id,
         AnswerLog.score == 1
     ).all()
-    
-    passed_item_ids = {item.scoring_item_id for item in passed_items_from_db}
-    
-    final_scores = {
-        "total_score": 0,
-        "organization_efficient_score": 0,
-        "clinical_judgement_score": 0,
-        "diet_edu_score": 0,
-        "medication_edu_score": 0,
-        "npo_edu_score": 0,
-        "special_med_handling_score": 0,
-    }
-    
-    COMBINED_ITEM_IDS = {
+    passed_item_ids = {item.scoring_item_id for item in passed_items_query}
+
+    # 2. 定義所有複合規則的子項目ID
+    COMPOSITE_SUB_ITEM_IDS = {
         'proper_guidance_s1', 'proper_guidance_s2', 'proper_guidance_s3', 'proper_guidance_s4',
         'med_usage_timing_method.s1', 'med_usage_timing_method.s2',
         'hydration_and_goal.s1', 'hydration_and_goal.s2'
     }
-    
-    # First, calculate scores for standard, individual items
+
+    # 3. 初始化五大維度的分數
+    final_scores = {
+        "review_med_history_score": 0.0,
+        "medical_interview_score": 0.0,
+        "counseling_edu_score": 0.0,
+        "organization_efficiency_score": 0.0,
+        "clinical_judgment_score": 0.0,
+    }
+
+    CATEGORY_TO_KEY_MAP = {
+        "檢閱藥歷": "review_med_history_score",
+        "醫療面談": "medical_interview_score",
+        "諮商衛教": "counseling_edu_score",
+        "臨床判斷": "clinical_judgment_score"
+    }
+
+    # 4. 計算【標準項目】的分數
+    # 遍歷所有可能的評分項，如果它通過了【且】不是一個複合子項目，就計分
     for item_id, criterion in scoring_criteria_map.items():
-        if item_id in passed_item_ids and item_id not in COMBINED_ITEM_IDS:
-            field = map_criterion_to_field(criterion)
-            if field in final_scores:
-                final_scores[field] += criterion.get('weight', 0.0)
-                
-    # "適切發問及引導"
-    s1 = 1 if 'proper_guidance_s1' in passed_item_ids else 0
-    s2 = 1 if 'proper_guidance_s2' in passed_item_ids else 0
-    s3 = 1 if 'proper_guidance_s3' in passed_item_ids else 0
-    s4 = 1 if 'proper_guidance_s4' in passed_item_ids else 0
-    appropriate_questioning_score = ((s1 + s2 + s3 + s4) / 4.0) * 3.0
-    final_scores['organization_efficient_score'] += appropriate_questioning_score
+        if item_id in passed_item_ids and item_id not in COMPOSITE_SUB_ITEM_IDS:
+            weight = criterion.get('weight', 0.0)
+            category = criterion.get('category')
 
-    # "說明藥物使用時機及方式"
-    med_s1 = 1 if 'med_usage_timing_method.s1' in passed_item_ids else 0
-    med_s2 = 1 if 'med_usage_timing_method.s2' in passed_item_ids else 0
-    med_usage_score = ((med_s1 + med_s2) / 2.0) * 1.0
-    final_scores['medication_edu_score'] += med_usage_score
-
-    # "說明水分補充方式及清腸理想狀態"
-    hydro_s1 = 1 if 'hydration_and_goal.s1' in passed_item_ids else 0
-    hydro_s2 = 1 if 'hydration_and_goal.s2' in passed_item_ids else 0
-    hydration_score = ((hydro_s1 + hydro_s2) / 2.0) * 1.0
-    # This can be categorized under diet or medication; let's put it in medication for now.
-    final_scores['medication_edu_score'] += hydration_score
+            if item_id == 'procedural_order_check':
+                final_scores['organization_efficiency_score'] += weight
+            elif category in CATEGORY_TO_KEY_MAP:
+                score_key = CATEGORY_TO_KEY_MAP[category]
+                final_scores[score_key] += weight
+            else:
+                logger.warning(f"標準項目計分時發現未知 category '{category}' for item ID: {item_id}")
     
-    # Calculate total score
+    # 5. 根據規則計算【複合項目】的分數
+    
+    # 規則 1: 適切發問及引導 (醫療面談)
+    s1_guidance = 1 if 'proper_guidance_s1' in passed_item_ids else 0
+    s2_guidance = 1 if 'proper_guidance_s2' in passed_item_ids else 0
+    s3_guidance = 1 if 'proper_guidance_s3' in passed_item_ids else 0
+    s4_guidance = 1 if 'proper_guidance_s4' in passed_item_ids else 0
+    questioning_score = ((s1_guidance + s2_guidance + s3_guidance + s4_guidance) / 4.0) * 3.0
+    final_scores['medical_interview_score'] += questioning_score
+    logger.info(f"[{session_id}] 適切發問及引導分數: {questioning_score}")
+
+    # 規則 2: 說明藥物使用時機及方式 (諮商衛教)
+    s1_med = 1 if 'med_usage_timing_method.s1' in passed_item_ids else 0
+    s2_med = 1 if 'med_usage_timing_method.s2' in passed_item_ids else 0
+    med_usage_score = ((s1_med + s2_med) / 2.0) * 1.0
+    final_scores['counseling_edu_score'] += med_usage_score
+    logger.info(f"[{session_id}] 藥物使用時機方式分數: {med_usage_score}")
+
+    # 規則 3: 說明水分補充方式及清腸理想狀態 (諮商衛教)
+    s1_hydro = 1 if 'hydration_and_goal.s1' in passed_item_ids else 0
+    s2_hydro = 1 if 'hydration_and_goal.s2' in passed_item_ids else 0
+    hydration_score = ((s1_hydro + s2_hydro) / 2.0) * 1.0
+    final_scores['counseling_edu_score'] += hydration_score
+    logger.info(f"[{session_id}] 水分補充與理想狀態分數: {hydration_score}")
+
+    # 6. 計算總分
     total_score = sum(final_scores.values())
-    
-    # Prepare data for database insertion (convert to string)
-    score_data = {key: str(round(value, 2)) for key, value in final_scores.items()}
-    score_data['total_score'] = str(round(total_score, 2))
-    
-    logger.info(f"[{session_id}] Final calculated scores: {score_data}")
-    
-    agent_settings = db.query(AgentSettings).filter(AgentSettings.agent_code == session_map.agent_code).first()
-    summary_prompt = f"""
-    你是一個專業的臨床指導老師，請根據以下對話紀錄，為使用者(醫生)的各項表現提供具體的文字評語和總結。
-    請嚴格按照下面的JSON格式輸出，不要有任何額外的文字或解釋。
-    **病患背景資料:** {agent_settings.med_info}
-    **對話紀錄:** {formatted_history}
-    **輸出格式 (JSON):**
-    {{
-        "total_summary": "一句話總評", "organization_efficient_summary": "組織效率的評語",
-        "clinical_judgement_summary": "臨床判斷的評語", "diet_edu_summary": "飲食衛教的評語",
-        "medication_edu_summary": "藥物衛教的評語", "npo_edu_summary": "禁水衛教的評語",
-        "special_med_handling_summary": "特殊藥物處理的評語"
-    }}
 
+    score_data_to_save = {key: str(round(value, 2)) for key, value in final_scores.items()}
+    score_data_to_save['total_score'] = str(round(total_score, 2))
+    
+    logger.info(f"[{session_id}] 最終計算分數: {score_data_to_save}")
+    
+    # 7. 生成總結 (此部分邏輯不變)
+    agent_settings = db.query(AgentSettings).filter(AgentSettings.agent_code == session_map.agent_code).first()
+    chat_history_rows = db.query(ChatLog).filter(ChatLog.session_id == session_id).order_by(ChatLog.time.asc()).all()
+    formatted_history = "\n".join([f"{'學員' if e.role == 'user' else '病患'}: {e.text}" for e in chat_history_rows])
+
+    summary_prompt = f"""
+    你是一位專業的臨床衛教指導老師。請根據以下病患背景和完整的對話紀錄，為學員的表現提供具體評語。
+    請嚴格按照下面的JSON格式輸出，對每一個項目提供簡潔、有建設性的評語。
+
+    [病患背景資料]:
+    {agent_settings.med_info if agent_settings else '無'}
+
+    [對話紀錄]:
+    {formatted_history}
+
+    [輸出格式 (JSON)]:
+    {{
+        "total_summary": "一句話總評，點出學員表現最突出或最需改進的地方。",
+        "review_med_history_summary": "針對「檢閱藥歷」能力的評語。",
+        "medical_interview_summary": "針對「醫療面談」技巧的評語(包含問候、引導、確認資訊等)。",
+        "counseling_edu_summary": "針對「諮商衛教」內容正確性的評語(包含飲食、用藥方式、水分補充等)。",
+        "organization_efficiency_summary": "針對「組織效率」(衛教流程順序)的評語。",
+        "clinical_judgment_summary": "針對「臨床判斷」能力的評語(包含判斷用藥時間、禁水時間、處理特殊藥物等)。"
+    }}
     """
     
     try:
-        logger.info(f"[{session_id}] Generating text summary...")
-        summary_result_str = await generate_llm_response(summary_prompt, "gemma3:12b")
+        logger.info(f"[{session_id}] 正在生成文字總結...")
+        summary_result_str = await generate_llm_response(summary_prompt, "gemma3:4b")
         summary_data = parse_llm_json(summary_result_str)
 
-        # 7. Save scores and summary to the database
-        new_scores = Scores(session_id=session_id, **score_data)
-        db.merge(new_scores)
+        db.merge(Scores(session_id=session_id, **score_data_to_save))
+        db.merge(Summary(session_id=session_id, **summary_data))
 
-        new_summary = Summary(session_id=session_id, **summary_data)
-        db.merge(new_summary)
-
-        session_map.score = score_data.get("total_score", "0")
+        session_map.score = score_data_to_save.get("total_score")
+        session_map.is_completed = True
         
         db.commit()
-        logger.info(f"Session {session_id} scoring and summary saved successfully.")
+        logger.info(f"Session {session_id} 的評分和總結已成功儲存。")
 
         return {"status": "completed", "session_id": session_id}
+
+    except Exception as e:
+        logger.error(f"處理 Session {session_id} 評分總結時發生錯誤: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"生成評分報告時發生內部錯誤: {e}")
 
     except json.JSONDecodeError as e:
         logger.error(f"LLM summary response JSON format error: {e}. Response: {summary_result_str}")
