@@ -2,18 +2,20 @@
     {
         "id": "review_med_history_1",
         "category": "檢閱藥歷",
-        "item": "能詢問患者是否有使用此類藥物經驗",
+        "item": "能詢問患者是否有使用此類藥物經驗(保可淨/清腸藥)",
+        "任務說明": "詢問病人過去是否使用過保可淨或類似的清腸藥物。",
         "weight": 2,
         "type": "RAG",
         "example_answer": [
-            "請問您之前有使用過清腸劑(藥)/保可淨嗎？",
-            "您以前有吃過這種幫助排便的藥水嗎？"
+            "請問您之前有使用過清腸劑(藥)/保可淨嗎",
+            "您之前有用過這個藥嗎"
         ]
     },
     {
         "id": "review_med_history_2",
         "category": "檢閱藥歷",
         "item": "知道如何查閱患者目前用藥",
+        "任務說明": "主動查詢或詢問病人目前正在服用的所有藥物，特別是影響檢查的藥物。",
         "weight": 4,
         "type": "RAG",
         "example_answer": [
@@ -25,6 +27,7 @@
         "id": "greeting_hello",
         "category": "醫療面談",
         "item": "向病人問好",
+        "任務說明": "以親切的態度向病人打招呼。",
         "weight": 1,
         "type": "RAG",
         "example_answer": ["先生/小姐，您好"]
@@ -33,14 +36,16 @@
         "id": "invite_to_sit",
         "category": "醫療面談",
         "item": "請病人坐下",
+        "任務說明": "引導並邀請病人坐下，開始諮詢。",
         "weight": 1,
         "type": "RAG",
-        "example_answer": ["請坐。"]
+        "example_answer": ["請坐。","先生/小姐 請先坐下", "你好 請坐"]
     },
     {
         "id": "confirm_self_use",
         "category": "醫療面談",
         "item": "確認是否本人使用（清腸劑/保可淨）",
+        "任務說明": "確認領取清腸藥物的是病人本人，且藥物將由本人使用。",
         "weight": 1,
         "type": "RAG",
         "example_answer": ["請問這個清腸劑是您本人要用的嗎？","今天是您自己要使用保可淨嗎？"]
@@ -49,6 +54,7 @@
         "id": "proper_guidance_s1",
         "category": "醫療面談",
         "item": "是否引導病人進到衛教對話",
+        "任務說明": "開啟衛教對話，了解病人想詢問的問題。",
         "weight": 1,
         "type": "RAG",
         "example_answer": [
@@ -59,6 +65,7 @@
         "id": "proper_guidance_s2",
         "category": "醫療面談",
         "item": "是否確認病人檢查型態",
+        "任務說明": "向病人確認此次大腸鏡檢查是一般型還是無痛型。",
         "weight": 1,
         "type": "RAG",
         "example_answer": [
@@ -69,6 +76,7 @@
         "id": "proper_guidance_s3",
         "category": "醫療面談",
         "item": "是否進行病人不知道檢查型態的引導對話",
+        "任務說明": "當病人不清楚檢查型態時，能透過費用等方式引導病人判斷。",
         "weight": 1,
         "type": "RAG",
         "example_answer": [
@@ -81,6 +89,7 @@
         "id": "proper_guidance_s4",
         "category": "醫療面談",
         "item": "是否確認病人檢查時間",
+        "任務說明": "向病人確認大腸鏡檢查的具體日期與時間。",
         "weight": 1,
         "type": "RAG",
         "example_answer": [
@@ -92,6 +101,7 @@
         "id": "ask_special_meds",
         "category": "諮商衛教",
         "item": "有詢問是否有使用降血糖或防栓塞藥物",
+        "任務說明": "主動詢問病人是否有在服用降血糖、抗凝血或抗血小板等特定藥物。",
         "weight": 0.5,
         "type": "RAG",
         "example_answer": [
@@ -105,6 +115,7 @@
         "id": "explain_med_purpose",
         "category": "諮商衛教",
         "item": "說明藥物開立目的",
+        "任務說明": "清楚向病人解釋開立保可淨（清腸劑）是為了徹底清潔腸道，以利檢查。",
         "weight": 0.5,
         "type": "RAG",
         "example_answer": [
@@ -115,6 +126,7 @@
         "id": "diet_basic",
         "category": "諮商衛教",
         "item": "能做簡易飲食衛教",
+        "任務說明": "指導病人在檢查前三天、前兩天及前一天的飲食控制原則（低渣與清流質飲食）。",
         "weight": 0.5,
         "type": "RAG_diet_logic",
         "example_answer": [
@@ -125,6 +137,7 @@
         "id": "med_usage_timing_method.s1",
         "category": "諮商衛教",
         "item": "是否正確說明第一包清腸劑泡製方法及服用方式",
+        "任務說明": "清楚說明第一包保可淨的泡製水量、攪拌方式、水溫變化及服藥時間。",
         "weight": 1,
         "type": "RAG_med_usage_method",
         "example_answer": [
@@ -135,6 +148,7 @@
         "id": "med_usage_timing_method.s2",
         "category": "諮商衛教",
         "item": "是否正確說明第二包清腸劑泡製方法及服用方式",
+        "任務說明": "清楚說明第二包保可淨的泡製水量、攪拌方式、水溫變化及服藥時間。",
         "weight": 1,
         "type": "RAG_med_usage_method",
         "example_answer": [
@@ -145,6 +159,7 @@
         "id": "hydration_and_goal.s1",
         "category": "諮商衛教",
         "item": "是否正確說明水分補充方式",
+        "任務說明": "指導病人在服藥後如何正確、分次補充水分，並說明可搭配的飲品類型。",
         "weight": 1,
         "type": "RAG_4b",
         "example_answer": [
@@ -155,6 +170,7 @@
         "id": "hydration_and_goal.s2",
         "category": "諮商衛教",
         "item": "是否正確說明清腸理想狀態",
+        "任務說明": "向病人描述清腸完成的理想狀態（糞水呈淡黃清澈），並指導若未達標的應對方式。",
         "weight": 1,
         "type": "RAG_4b",
         "example_answer": [
@@ -165,6 +181,7 @@
         "id": "npo_mention",
         "category": "諮商衛教",
         "item": "能說明禁水時間（是否有提到禁水）",
+        "任務說明": "根據病人檢查類型（一般或無痛），告知檢查前需開始禁水的時間點。",
         "weight": 1,
         "type": "RAG_explain_npo",
         "example_answer": [
@@ -176,6 +193,7 @@
         "id": "med_onset_duration",
         "category": "諮商衛教",
         "item": "說明開始作用時間及平均時數",
+        "任務說明": "告知病人服用清腸藥後，大約多久會開始腹瀉，並提供促進排便的建議。",
         "weight": 0.5,
         "type": "RAG",
         "example_answer": [
@@ -186,6 +204,7 @@
         "id": "clinical_med_timing_1",
         "category": "臨床判斷",
         "item": "能依病人狀況判斷服藥時間",
+        "任務說明": "根據病人的檢查日期，準確告知第一包清腸劑的服用日期與時間。",
         "weight": 1.5,
         "type": "RAG_confirm_med_time",
         "example_answer": [
@@ -196,6 +215,7 @@
         "id": "clinical_med_timing_2",
         "category": "臨床判斷",
         "item": "能依檢查時間判斷早上服藥時間點",
+        "任務說明": "根據病人的檢查時間，推算出檢查當天早上第二包清腸劑的最適服用時間點。",
         "weight": 1.5,
         "type": "RAG_confirm_med_time",
         "example_answer": [
@@ -207,6 +227,7 @@
         "id": "clinical_npo_timing",
         "category": "臨床判斷",
         "item": "能依病人狀況判斷禁水時間",
+        "任務說明": "根據病人的檢查類型與時間，準確計算並告知病人需要開始禁水的具體時間點。",
         "weight": 1.5,
         "type": "RAG_confirm_npo",
         "example_answer": [
@@ -218,6 +239,7 @@
         "id": "identify_special_meds",
         "category": "臨床判斷",
         "item": "能判斷病人是否有特殊藥物（降血糖/防栓塞/便祕藥）",
+        "任務說明": "主動詢問並確認病人是否有使用除了清腸藥(保可淨)外的降血糖、防栓塞或便秘藥物等特殊用藥。",
         "weight": 1,
         "type": "RAG",
         "example_answer": [
@@ -228,6 +250,7 @@
         "id": "specify_special_meds",
         "category": "臨床判斷",
         "item": "能依病人狀況正確說明”特殊藥物”是否需停藥或續用",
+        "任務說明": "針對病人正在服用的特定藥物，提供明確的指示，說明在檢查前應繼續服用還是暫停服用。",
         "weight": 1,
         "type": "RAG_special_meds",
         "example_answer": [
@@ -241,6 +264,7 @@
         "id": "procedural_order_check",
         "category": "醫療面談",
         "item": "按優先順序處置(衛教內容依順序執行)",
+        "任務說明": "整個衛教流程需依照合乎邏輯的順序進行，從問好、確認基本資訊，到飲食衛教，再到用藥說明。",
         "weight": 6,
         "type": "RAG_sequence_check",
         "example_answer": [

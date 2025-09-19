@@ -1,9 +1,9 @@
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Boolean, UniqueConstraint
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Boolean, UniqueConstraint, ForeignKey
+from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from datetime import datetime, timezone, timedelta
 import uuid
 import secrets
-
+from typing import Optional
 # --- 資料庫設定 ---
 DATABASE_URL = 'sqlite:///chatlog.db'
 engine = create_engine(DATABASE_URL, echo=False)
@@ -31,6 +31,7 @@ class ChatLog(Base):
     user_id = Column(Integer, nullable=True)
     session_id = Column(String, default=lambda: str(uuid.uuid4()))
     agent_code = Column(String, nullable=False)
+    module_id = Column(String, nullable=False, default="default_module", comment="衛教模組ID") # 新增
     role = Column(String, nullable=False)
     text = Column(Text, nullable=False)
     time = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -39,6 +40,7 @@ class AnswerLog(Base):
     __tablename__ = 'answer_log'
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_id = Column(String, nullable=False, index=True)
+    module_id = Column(String, nullable=False, default="default_module", comment="衛教模組ID") # 新增
     scoring_item_id = Column(String, nullable=False, comment="來自 scoring_criteria.json 的 id")
     score = Column(Integer, nullable=False, comment="評分結果 (1=達成, 0=未達成)")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -71,6 +73,7 @@ class SessionUserMap(Base):
     session_id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     username = Column(String(32), nullable=False, comment="使用者名稱")
     agent_code = Column(String, nullable=False, comment="案例代碼")
+    module_id = Column(String, nullable=False, default="default_module", comment="衛教模組ID") # 新增
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, comment="對話建立時間")
     score = Column(String(16), nullable=True, comment="對話評分(字串格式)")
     is_completed = Column(Boolean, default=False, comment="是否完成對話")
@@ -91,6 +94,7 @@ class PasswordResetToken(Base):
 class Scores(Base):
     __tablename__ = 'sessionid_score'
     session_id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    module_id = Column(String, nullable=False, default="default_module", comment="衛教模組ID") # 新增
     total_score = Column(String, nullable=False, comment="總分")
     review_med_history_score = Column(String, nullable=False, comment="檢閱藥歷分數")
     medical_interview_score = Column(String, nullable=False, comment="醫療面談分數")
@@ -101,6 +105,7 @@ class Scores(Base):
 class Summary(Base):
     __tablename__ = 'sessionid_summary'
     session_id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    module_id = Column(String, nullable=False, default="default_module", comment="衛教模組ID") # 新增
     total_summary = Column(String, nullable=False, comment="總結")
     review_med_history_summary = Column(String, nullable=False, comment="檢閱藥歷總結")
     medical_interview_summary = Column(String, nullable=False, comment="醫療面談總結")
@@ -112,6 +117,7 @@ class ConversationSummary(Base):
     __tablename__ = 'conversation_summary'
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_id = Column(String, nullable=False, index=True) # 加上索引以加快查詢
+    module_id = Column(String, nullable=False, default="default_module", comment="衛教模組ID") # 新增
     summary = Column(Text, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))  
 
@@ -120,22 +126,37 @@ class PrecomputedSessionAnswer(Base):
     __tablename__ = 'precomputed_session_ans'
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_id = Column(String, nullable=False, unique=True, index=True) # 加上索引以加快查詢
+    module_id = Column(String, nullable=False, default="default_module", comment="衛教模組ID") # 新增
     exam_day = Column(String, nullable=False, comment="檢查日")
     prev_1d = Column(String, nullable=False, comment="檢查前一天")
     prev_2d = Column(String, nullable=False, comment="檢查前兩天")
     prev_3d = Column(String, nullable=False, comment="檢查前三天") #?月?號
     second_dose_time = Column(String, nullable=False, comment="第二包藥劑服用時間") #凌晨?點
     npo_start_time = Column(String, nullable=False, comment="禁水時間") #上午?點
+    actual_check_type = Column(String, nullable=False, comment="實際檢查類型(一般/無痛)")
     
 class ScoringPromptLog(Base):
     __tablename__ = 'scoring_prompt_log'
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_id = Column(String, nullable=False, index=True)
+    module_id = Column(String, nullable=False, default="default_module", comment="衛教模組ID") # 新增
     scoring_item_id = Column(String, nullable=False, index=True)
     prompt_text = Column(Text, nullable=False, comment="發送給 LLM 的完整 Prompt")
     llm_response = Column(Text, nullable=False, comment="LLM 返回的原始回應")
     final_score = Column(Integer, nullable=False, comment="解析後的最終分數 (0 或 1)")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), comment="紀錄建立時間")
+
+class ScoringAttributionLog(Base):
+    __tablename__ = 'scoring_attribution_log'
+    id = Column(Integer, primary_key=True)
+    session_id = Column(String, index=True)
+    chat_log_id = Column(Integer, ForeignKey('chatlog.id')) # <-- 連結到觸發評分的那句話
+    module_id = Column(String, nullable=False, default="default_module", comment="衛教模組ID") # 新增
+    scoring_item_id = Column(String, index=True) # <-- 連結到 scoring_criteria.json 的 id
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    # 確保每個句子對應的評分項是唯一的
+    __table_args__ = (UniqueConstraint('chat_log_id', 'scoring_item_id', name='_chat_item_uc'),)
 
 # --- 資料庫初始化函數 ---
 def init_database():
@@ -212,7 +233,7 @@ def get_latest_chat_history_for_scoring(session_id: str, limit: int = 4) -> list
     finally:
         db.close()
         
-def save_chat_message(role: str, text: str, session_id: str = None, agent_code: str = "default"):
+def save_chat_message(role: str, text: str, session_id: str = None, agent_code: str = "default", module_id: str = "default_module", return_obj: bool = False):
     """保存聊天訊息到資料庫"""
     db = SessionLocal()
     try:
@@ -223,15 +244,32 @@ def save_chat_message(role: str, text: str, session_id: str = None, agent_code: 
             role=role, 
             text=text, 
             session_id=session_id,
-            agent_code=agent_code
+            agent_code=agent_code,
+            module_id=module_id # 新增 module_id
         )
         db.add(chat_log)
         db.commit()
+        db.refresh(chat_log)
+        
+        if return_obj:
+            return chat_log
+
+        
         return session_id
     except Exception as e:
         print(f"保存聊天訊息錯誤: {e}")
         db.rollback()
         return session_id or str(uuid.uuid4())
+    finally:
+        db.close()
+
+# get_module_id_by_session 函數
+def get_module_id_by_session(session_id: str) -> Optional[str]:
+    """根據 session_id 獲取模組ID"""
+    db = SessionLocal()
+    try:
+        session_map = db.query(SessionUserMap).filter(SessionUserMap.session_id == session_id).first()
+        return session_map.module_id if session_map else None
     finally:
         db.close()
 
@@ -467,7 +505,7 @@ def cleanup_expired_tokens():
     finally:
         db.close()
 
-def save_db_conversation_summary(session_id: str, summary: str):
+def save_db_conversation_summary(session_id: str, summary: str, module_id: str = "default_module"):
     """將對話總結儲存到資料庫"""
     db = SessionLocal()
     try:
@@ -477,7 +515,7 @@ def save_db_conversation_summary(session_id: str, summary: str):
         )
         db.add(summary_log)
         db.commit()
-        print(f"成功儲存 Session {session_id} 的總結")
+        print(f"成功儲存 Session {session_id} (Module: {module_id}) 的總結")
     except Exception as e:
         print(f"儲存對話總結錯誤: {e}")
         db.rollback()

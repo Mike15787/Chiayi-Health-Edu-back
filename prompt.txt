@@ -1,0 +1,2 @@
+由於我將我的後端程式模組化
+所以我先説明一下模組內的東西包括了agent_prompts.json config.py patient_agent.py precomputation.py scoring_criteria.json scoring_logic.py summary_logic.py

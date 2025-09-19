@@ -1,4 +1,8 @@
 # --- START OF FILE scoring_service.py ---
+# basic prompt 跟 strong prompt 應該要分為 強參考 以及 弱參考
+# 強參考代表 所說內容 語意 都要相符參考答案
+# 弱參考代表 只要內容有表達出來就可以給過 先等等好了 我現在是在於 評分項目有沒有搜索到的問題 判錯的問題之後再解決
+
 
 import json
 import logging
@@ -14,7 +18,7 @@ from utils import generate_llm_response
 
 logger = logging.getLogger(__name__)
 
-SCORING_MODEL_NAME = "gemma3:1b-it-fp16"
+SCORING_MODEL_NAME = "gemma3:4b"
 STRONGER_SCORING_MODEL_NAME = "gemma3:4b" 
 
 # 特殊藥物衛教指令對照表
@@ -115,7 +119,7 @@ class ScoringService:
             # 發生錯誤時，返回 0 且不寫入資料庫，讓外層的 rollback 機制處理
             return 0
     
-    async def process_user_inputs_for_scoring(self, session_id: str, chat_snippet: List[Dict], db: Session):
+    async def process_user_inputs_for_scoring(self, session_id: str, chat_snippet: List[Dict], db: Session) -> List[str]:
         """處理多個使用者輸入並進行評分"""
         if not chat_snippet:
             return
@@ -148,6 +152,8 @@ class ScoringService:
         
         # 獲取預計算的答案 (邏輯不變)
         precomputed_data = db.query(PrecomputedSessionAnswer).filter(PrecomputedSessionAnswer.session_id == session_id).first()
+        
+        newly_passed_ids = []
 
         for item_id in relevant_ids:
             if item_id in passed_ids:
@@ -156,8 +162,14 @@ class ScoringService:
             
             criterion = next((item for item in self.criteria if item['id'] == item_id), None)
             if criterion:
-                # 傳遞格式化後的完整對話
-                await self.score_item(session_id, formatted_conversation, criterion, db, precomputed_data)
+                # score_item 內部會評分並更新 AnswerLog
+                score = await self.score_item(session_id, formatted_conversation, criterion, db, precomputed_data)
+                
+                # 如果這次評分通過了，就加到「新通過」列表中
+                if score == 1:
+                    newly_passed_ids.append(item_id)
+                    
+        return newly_passed_ids
 
     async def score_item(self, session_id: str, conversation_context: str, criterion: dict, db: Session, precomputed_data):
         """對單個評分項目進行評分並儲存結果"""
@@ -199,24 +211,34 @@ class ScoringService:
             )
             db.execute(on_conflict_stmt)
             db.commit()
+            
+            return score
 
         except Exception as e:
             logger.error(f"[{session_id}] Error scoring item '{item_id}': {e}")
             db.rollback()
+            return 0 # 出錯時返回 0
 
     async def _check_rag_basic(self, session_id: str, conversation_context: str, criterion: dict, db: Session) -> int:
-        """使用 LLM 進行基礎 RAG 評分"""
+        """使用優化後的 LLM 進行基礎 RAG 評分"""
         prompt = f"""
-        你是一個資深護理師。根據學員的回答，以及參考答案，判斷是否達成了評分項目。
-        判斷的標準為語意表達正確、所講的內容正確。
-        如果達成，只輸出 "1"。如果未達成，只輸出 "0"。不要有任何其他文字。
+        你是一個嚴謹的對話評分員。你的任務是判斷一段對話中，學員是否完成了特定的溝通任務。請嚴格按照指令操作。
 
-        [評分項目]: {criterion['item']}
-        [參考答案]: {" / ".join(criterion['example_answer'])}
-        [學員回答]:
+        [溝通任務]: {criterion['任務說明']}
+        [任務說明/參考範例]: {" / ".join(criterion['example_answer'])}
+
+        [學員與病人的對話紀錄]:
+        ---
         {conversation_context}
+        ---
 
-        [你的判斷 (1 或 0)]:
+        [你的判斷任務]:
+        請仔細閱讀上面的[學員與病人的對話紀錄]，判斷其中是否**包含**了符合[溝通任務]的內容。你不需要判斷整段對話是否完美，只需要確認這個特定的任務有沒有被完成即可。
+
+        - 如果對話中**有**任何一句話或一個片段的語意符合[溝通任務]，請只輸出 "1"。
+        - 如果遍覽整段對話後，**都找不到**符合[溝通任務]的內容，請只輸出 "0"。
+
+        [你的判斷 (只輸出 1 或 0)]:
         """
         return await self._call_llm_and_log(session_id, criterion['id'], prompt, SCORING_MODEL_NAME, db)
     
