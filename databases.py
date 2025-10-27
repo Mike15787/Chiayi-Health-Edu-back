@@ -4,6 +4,8 @@ from datetime import datetime, timezone, timedelta
 import uuid
 import secrets
 from typing import Optional
+import argparse 
+
 # --- 資料庫設定 ---
 DATABASE_URL = 'sqlite:///chatlog.db'
 engine = create_engine(DATABASE_URL, echo=False)
@@ -51,7 +53,11 @@ class AnswerLog(Base):
     
 class AgentSettings(Base):
     __tablename__ = 'agent_settings'
+    # 10/27 新增欄位 edu_type 清腸、W抗凝、D抗凝、慢性
+    #       新增欄位 chemical_type 保可淨、腸見淨、其他抗凝藥劑
     id = Column(Integer, primary_key=True, autoincrement=True)
+    edu_type = Column(String)
+    chemical_type = Column(String)
     agent_code = Column(String, unique=True, nullable=False)   # 例如：A1、B1
     gender = Column(String)
     age = Column(String)
@@ -572,5 +578,52 @@ def get_conversation_history_for_user(session_id: str = None, limit: int = 20) -
     finally:
         db.close()
 
+# 這邊大概會加入一堆 我可能會常用的資料庫處理function
+def delete_table(table_name: str):
+    """
+    刪除指定的資料表。
+    請注意：這會永久刪除資料，請謹慎使用！
+    """
+    if table_name == 'agentsettings':
+        table_object = AgentSettings.__table__
+    # 如果之後有其他需要透過指令刪除的資料表，可以在這裡擴展
+    # elif table_name == 'another_table':
+    #     table_object = AnotherTable.__table__
+    else:
+        print(f"錯誤：找不到名為 '{table_name}' 的資料表定義，或不支援透過此指令刪除。")
+        return
+
+    confirm = input(f"確認要永久刪除資料表 '{table_name}' 嗎？(輸入 'yes' 確認)：")
+    if confirm.lower() == 'yes':
+        try:
+            table_object.drop(engine)
+            print(f"資料表 '{table_name}' 已成功刪除。")
+        except Exception as e:
+            print(f"刪除資料表 '{table_name}' 失敗: {e}")
+    else:
+        print(f"取消刪除資料表 '{table_name}'。")
+
 # 自動初始化資料庫
 init_database()
+
+
+# --- 新增：命令列解析與執行邏輯 ---
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="管理資料庫表格。")
+    parser.add_argument(
+        '--del',
+        dest='delete_table_name',
+        choices=['agentsettings'], # 這裡可以擴展其他可刪除的表格名稱
+        help="刪除指定的資料表 (目前支援: agentsettings)。請謹慎使用，資料將永久刪除！"
+    )
+
+    args = parser.parse_args()
+
+    if args.delete_table_name:
+        print(f"準備刪除資料表: {args.delete_table_name}...")
+        delete_table(args.delete_table_name)
+    else:
+        # 如果沒有指定任何命令，可以選擇做一些默認操作或者提示用戶
+        print("請指定操作，例如：")
+        print("  - 刪除 AgentSettings 資料表: python databases.py --del agentsettings")
+        print("  - 啟動時默認調用 init_database()。")

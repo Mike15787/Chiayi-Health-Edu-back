@@ -803,11 +803,24 @@ async def health_check():
 
 @app.get("/agent_info", response_model=AgentInfo)
 async def agent_info_find(
+    edu_type: str = Query(..., description="衛教類型: 清腸劑衛教, Warfarin抗凝衛教, DOAC抗凝衛教, 慢性病衛教"),
+    chemical_type: str = Query(..., description="藥物種類: 保可淨(BowKlean), 腸見淨(Klean-prep)等"),
     level: str = Query(..., description="難度級別: 初級, 中級, 高級"),
     username: str = Query(..., description="使用者名稱")
 ):
     """
     根據難度級別隨機選擇並返回 AgentSettings 資料，同時創建 SessionUserMap 記錄
+    Note: 此端點不再創建 SessionUserMap。該操作會在 `/create_session` 執行。
+    """
+
+    """
+    找時間問嘉基這個
+    目前用藥 印象中他們是希望從每個agent的藥庫裡面抽藥品種類出來 依照每個agent的藥品數量
+    範例1 A1 有5種藥 -> 簡單模式只抽4種以下 -> 從1~4取隨機數量的藥品出來
+    範例2 C2 有14種藥 -> 困難模式要抽10種以上 -> 從10~14取隨機數量的藥品出來
+    範例3 B5 有7種藥 -> 普通模式要大於等於5 小於等於9 -> 從5~9 取隨機數量的藥品出來
+    範例4 B4 有10種藥 -> 普通模式要大於等於5 小於等於9 -> 從5~9 取隨機數量的藥品出來
+    藥品數量不會少於每種模式的最低需求藥品數量
     Note: 此端點不再創建 SessionUserMap。該操作會在 `/create_session` 執行。
     """
     try:
@@ -828,19 +841,18 @@ async def agent_info_find(
                 detail=f"無效的難度級別: {level}。請使用: 初級, 中級, 高級"
             )
         
-        # 取得對應的字母前綴
-        prefix = level_mapping[level]
-        
-        # 隨機選擇1-5之間的數字
-        random_number = random.randint(1, 5)
-        
-        # 組合 agent_code
-        agent_code = f"{prefix}{random_number}"
+        # 處理agent_code的號碼
+        prefix = level_mapping[level]# 取得對應的字母前綴
+        random_number = random.randint(1, 5) # 隨機選擇1-5之間的數字
+        agent_code = f"{prefix}{random_number}" # 組合 agent_code
         
         logger.info(f"查詢 AgentSettings: level={level}, agent_code={agent_code}, username={username}")
         
         # 從資料庫查詢對應的 AgentSettings
+        # 需要多加 對應的edu_type跟chemical_type
         agent_setting = db.query(AgentSettings).filter(
+            AgentSettings.edu_type == edu_type,
+            AgentSettings.chemical_type == chemical_type,
             AgentSettings.agent_code == agent_code
         ).first()
         

@@ -9,6 +9,10 @@ from databases import SessionLocal, AgentSettings
 
 # 新增欄位 過去有沒有用過瀉藥經驗
 
+# 10/27 新增欄位 edu_type 清腸劑衛教、W抗凝、D抗凝、慢性
+#       新增欄位 chemical_type 保可淨、腸見淨、其他抗凝藥劑
+
+
 data_list = [
     {
         "agent_code": "A1",
@@ -23,8 +27,10 @@ data_list = [
         "check_time": "上午08:10",
         "check_type": "無痛檢查",
         "low_cost_med": "無",
-        "payment_fee": "4500", 
-        "laxative_experience": "無"
+        "payment_fee": "4500",
+        "laxative_experience": "無",
+        "edu_type": "清腸劑衛教",
+        "chemical_type": "保可淨"
     },
     {
         "agent_code": "A2",
@@ -39,8 +45,10 @@ data_list = [
         "check_time": "上午10:00",
         "check_type": "無痛檢查",
         "low_cost_med": "無",
-        "payment_fee": "4500", 
-        "laxative_experience": "無"
+        "payment_fee": "4500",
+        "laxative_experience": "無",
+        "edu_type": "清腸劑衛教",
+        "chemical_type": "保可淨"
     },
     {
         "agent_code": "A3",
@@ -55,8 +63,10 @@ data_list = [
         "check_time": "上午11:20",
         "check_type": "無痛檢查",
         "low_cost_med": "無",
-        "payment_fee": "4500", 
-        "laxative_experience": "無"
+        "payment_fee": "4500",
+        "laxative_experience": "無",
+        "edu_type": "清腸劑衛教",
+        "chemical_type": "保可淨"
     },
     {
         "agent_code": "A4",
@@ -71,8 +81,10 @@ data_list = [
         "check_time": "上午12:00",
         "check_type": "一般檢查",
         "low_cost_med": "無",
-        "payment_fee": "800", 
-        "laxative_experience": "有"
+        "payment_fee": "800",
+        "laxative_experience": "有",
+        "edu_type": "清腸劑衛教",
+        "chemical_type": "保可淨"
     },
     {
         "agent_code": "A5",
@@ -87,8 +99,10 @@ data_list = [
         "check_time": "下午14:30",
         "check_type": "一般檢查",
         "low_cost_med": "無",
-        "payment_fee": "800", 
-        "laxative_experience": "無"
+        "payment_fee": "800",
+        "laxative_experience": "無",
+        "edu_type": "清腸劑衛教",
+        "chemical_type": "保可淨"
     },
     {
         "agent_code": "B1",
@@ -103,8 +117,10 @@ data_list = [
         "check_time": "上午11:20",
         "check_type": "無痛檢查",
         "low_cost_med": "無",
-        "payment_fee": "4500", 
-        "laxative_experience": "無"
+        "payment_fee": "4500",
+        "laxative_experience": "無",
+        "edu_type": "清腸劑衛教",
+        "chemical_type": "保可淨"
     },
     {
         "agent_code": "B2",
@@ -119,8 +135,10 @@ data_list = [
         "check_time": "上午12:00",
         "check_type": "無痛檢查",
         "low_cost_med": "無",
-        "payment_fee": "4500", 
-        "laxative_experience": "無"
+        "payment_fee": "4500",
+        "laxative_experience": "無",
+        "edu_type": "清腸劑衛教",
+        "chemical_type": "保可淨"
     },
     {
         "agent_code": "B3",
@@ -135,8 +153,10 @@ data_list = [
         "check_time": "下午14:30",
         "check_type": "一般檢查",
         "low_cost_med": "無",
-        "payment_fee": "800", 
-        "laxative_experience": "無"
+        "payment_fee": "800",
+        "laxative_experience": "無",
+        "edu_type": "清腸劑衛教",
+        "chemical_type": "保可淨"
     },
     {
         "agent_code": "B4",
@@ -151,8 +171,10 @@ data_list = [
         "check_time": "上午08:10",
         "check_type": "一般檢查",
         "low_cost_med": "無",
-        "payment_fee": "800", 
-        "laxative_experience": "有"
+        "payment_fee": "800",
+        "laxative_experience": "有",
+        "edu_type": "清腸劑衛教",
+        "chemical_type": "保可淨"
     },
     {
         "agent_code": "B5",
@@ -167,8 +189,10 @@ data_list = [
         "check_time": "上午10:00",
         "check_type": "無痛檢查",
         "low_cost_med": "無",
-        "payment_fee": "4500", 
-        "laxative_experience": "無"
+        "payment_fee": "4500",
+        "laxative_experience": "無",
+        "edu_type": "清腸劑衛教",
+        "chemical_type": "保可淨"
     },
     {
         "agent_code": "C1",
@@ -183,8 +207,10 @@ data_list = [
         "check_time": "上午12:00",
         "check_type": "無痛檢查",
         "low_cost_med": "無",
-        "payment_fee": "4500", 
-        "laxative_experience": "無"
+        "payment_fee": "4500",
+        "laxative_experience": "無",
+        "edu_type": "清腸劑衛教",
+        "chemical_type": "保可淨"
     },
     {
         "agent_code": "C2",
@@ -199,8 +225,10 @@ data_list = [
         "check_time": "下午14:30",
         "check_type": "無痛檢查",
         "low_cost_med": "無",
-        "payment_fee": "4500", 
-        "laxative_experience": "無"
+        "payment_fee": "4500",
+        "laxative_experience": "無",
+        "edu_type": "清腸劑衛教",
+        "chemical_type": "保可淨"
     },
     {
         "agent_code": "C3",
@@ -215,8 +243,10 @@ data_list = [
         "check_time": "上午10:00",
         "check_type": "一般檢查",
         "low_cost_med": "無",
-        "payment_fee": "800", 
-        "laxative_experience": "無"
+        "payment_fee": "800",
+        "laxative_experience": "無",
+        "edu_type": "清腸劑衛教",
+        "chemical_type": "保可淨"
     },
     {
         "agent_code": "C4",
@@ -231,8 +261,10 @@ data_list = [
         "check_time": "上午08:10",
         "check_type": "一般檢查",
         "low_cost_med": "無",
-        "payment_fee": "800", 
-        "laxative_experience": "有"
+        "payment_fee": "800",
+        "laxative_experience": "有",
+        "edu_type": "清腸劑衛教",
+        "chemical_type": "保可淨"
     },
     {
         "agent_code": "C5",
@@ -247,8 +279,10 @@ data_list = [
         "check_time": "上午11:20",
         "check_type": "一般檢查",
         "low_cost_med": "無",
-        "payment_fee": "800", 
-        "laxative_experience": "無"
+        "payment_fee": "800",
+        "laxative_experience": "無",
+        "edu_type": "清腸劑衛教",
+        "chemical_type": "保可淨"
     }
 ]
 
