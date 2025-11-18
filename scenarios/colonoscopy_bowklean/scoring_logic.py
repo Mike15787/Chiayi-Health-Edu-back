@@ -366,3 +366,57 @@ class ColonoscopyBowkleanScoringLogic:
         學員是否給出了正確的飲食衛教？如果正確，只輸出 "1"。如果不正確，只輸出 "0"。
         """
         return await self._call_llm_and_log(session_id, 'diet_basic', prompt, SCORING_MODEL_NAME, db)
+    
+    async def _check_med_mix_method(self, session_id: str, conversation_context: str, criterion: dict, db: Session) -> int:
+        """檢查學員是否正確說明了特定一包清腸劑的泡製方法。"""
+    
+        # 從 criterion ID 判斷是第一包還是第二包
+        dose_number_text = "第一包" if "first" in criterion['id'] else "第二包"
+    
+        prompt = f"""
+        你是一位嚴謹的臨床藥師，請判斷學員是否正確地說明了「{dose_number_text}」清腸劑的泡製與服用方式。
+
+        [正確的泡製方法參考]:
+        將一包「保可淨」倒入裝有150c.c.常溫水的杯中，攪拌至完全溶解後立即喝完。
+
+        [學員與病人的對話紀錄]:
+        ---
+        {conversation_context}
+        ---
+
+        [你的判斷任務]:
+        請判斷學員在對話中，是否有針對「{dose_number_text}」藥劑，清楚說明了類似上述的泡製方法？
+        你需要檢查的關鍵點包含：「150c.c.的水量」、「攪拌/溶解」、「立即喝完」。
+        只要語意正確即可，不需逐字比對。
+
+        - 如果學員對「{dose_number_text}」的說明包含上述所有關鍵點，請只輸出 "1"。
+        - 如果說明不完整、不正確或完全沒有提到，請只輸出 "0"。
+
+        [你的判斷 (只輸出 1 或 0)]:
+        """
+        return await self._call_llm_and_log(session_id, criterion['id'], prompt, SCORING_MODEL_NAME, db)
+    
+    async def _check_first_med_mix_time(self, session_id: str, conversation_context: str, criterion: dict, db: Session) -> int:
+        """檢查學員是否說明了口服瀉藥錠劑（如樂可舒）的服用方法。"""
+        
+        prompt = f"""
+        你是一位臨床藥師，請判斷學員的衛教內容是否完整。
+
+        [情境與任務]:
+        在某些清腸療程中，除了喝「保可淨」粉劑外，還需要搭配服用「口服瀉藥錠劑」，例如 '樂可舒(Dulcolax)'。
+        你的任務是判斷學員是否有提到關於服用這種「錠劑」的指示。
+
+        [學員與病人的對話紀錄]:
+        ---
+        {conversation_context}
+        ---
+
+        [你的判斷任務]:
+        請閱讀以上對話，判斷學員是否有提到需要服用藥丸或錠劑型式的瀉藥（不只是喝的粉劑）？
+
+        - 如果學員有提到關於「錠劑」的服用說明，請只輸出 "1"。
+        - 如果學員的衛教內容只提到了用喝的「保可淨」粉劑，完全沒提到任何錠劑或藥丸，請只輸出 "0"。
+
+        [你的判斷 (只輸出 1 或 0)]:
+        """
+        return await self._call_llm_and_log(session_id, criterion['id'], prompt, SCORING_MODEL_NAME, db)
