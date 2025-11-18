@@ -12,6 +12,15 @@ engine = create_engine(DATABASE_URL, echo=False)
 Base = declarative_base()
 SessionLocal = sessionmaker(bind=engine)
 
+#要再多紀錄時間 
+#衛教時間 系統回饋時間 閱讀回饋時間
+
+#學習次數 學習成果 這個應該是記錄在個人資料中
+#class PersonalData (username, uid,)
+#class LearningRecord(uid, edu_type)
+#學習次數是會更新的東西 更新時間大概是使用者確定完成了一個session 之後的事
+#大概也需要分類
+
 # --- 資料庫模型 ---
 class UserLogin(Base):
     __tablename__ = "user_login"
