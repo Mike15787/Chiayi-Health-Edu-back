@@ -1,7 +1,7 @@
 # scenerios/colonoscopy_bowelprep_A/config.py
 
 MODULE_ID = "colonoscopy_bowklean"
-SCORING_CRITERIA_FILE = "scenarios/colonoscopy_bowklean/scoring_criteria.json" # 相對於專案根目錄
+SCORING_CRITERIA_FILE = "scenarios/colonoscopy_bowklean/scoring_criteria_v2.json" # 相對於專案根目錄
 PATIENT_AGENT_MODEL_NAME = "gemma3:4b" # 病患 AI 使用的模型
 SCORING_MODEL_NAME = "gemma3:4b"       # 評分 LLM 使用的模型
 STRONGER_SCORING_MODEL_NAME = "gemma3:4b" # 強評分 LLM 使用的模型
