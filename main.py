@@ -1,6 +1,6 @@
 # main.py
 
-from fastapi import FastAPI, Request, File, UploadFile, HTTPException, Query, Path, Depends
+from fastapi import FastAPI, Request, File, UploadFile, HTTPException, Query, Path, Depends, Form
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -376,10 +376,10 @@ async def generate_tts_audio(text: str, voice: str = None) -> str:
         # 檢查檔案是否生成成功
         if not os.path.exists(audio_path):
             logger.error(f"edge-tts 音頻檔案生成失敗: {audio_path}")
-            return "/audio/silence.wav"
+            return "silence.wav"
         
         logger.info(f"edge-tts 音頻生成成功: {audio_filename} (語音: {selected_voice})")
-        return f"/audio/{audio_filename}"
+        return audio_filename
         
     except Exception as e:
         logger.error(f"edge-tts 生成錯誤: {e}")
@@ -505,6 +505,7 @@ async def options_handler(path: str):
     """處理 OPTIONS 請求"""
     return JSONResponse(content={"message": "OK"})
 
+@app.post("/stt", response_model=STTResponse)
 async def speech_to_text(
     audio: UploadFile = File(...),
     session_id: Optional[str] = Form(None) # <--- 接收 session_id
@@ -522,7 +523,7 @@ async def speech_to_text(
     logger.info(f"收到 STT 請求: {audio.filename}, Session: {session_id or 'New'}")
     
     # 1. 確定 session_id
-    current_session_id = session_id or str(uuid.uuid4())
+    current_session_id = session_id
     
     # 2. 永久儲存音訊檔案
     saved_audio_filename = f"user_{current_session_id}_{uuid.uuid4().hex}.wav"
