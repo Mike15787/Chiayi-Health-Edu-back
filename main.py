@@ -188,6 +188,7 @@ class ChatRequest(BaseModel):
 class STTResponse(BaseModel):
     text: str
     confidence: float = 0.0
+    session_id: str
 
 class ChatResponse(BaseModel):
     text: str
@@ -504,55 +505,79 @@ async def options_handler(path: str):
     """處理 OPTIONS 請求"""
     return JSONResponse(content={"message": "OK"})
 
-@app.post("/stt", response_model=STTResponse)
-async def speech_to_text(audio: UploadFile = File(...)):
-    """完整音頻轉文字 API"""
-    logger.info(f"收到 STT 請求: {audio.filename}, 類型: {audio.content_type}")
+async def speech_to_text(
+    audio: UploadFile = File(...),
+    session_id: Optional[str] = Form(None) # <--- 接收 session_id
+):
+    """
+    完整音頻轉文字 API。
+    新職責：
+    1. 接收音訊和可選的 session_id。
+    2. 如果沒有 session_id，則創建一個新的。
+    3. 永久儲存音訊檔案。
+    4. 進行 STT。
+    5. 將使用者的訊息（文字 + 音檔名）存入資料庫。
+    6. 回傳辨識文字和 session_id 給前端。
+    """
+    logger.info(f"收到 STT 請求: {audio.filename}, Session: {session_id or 'New'}")
     
-    # 檢查檔案類型
-    allowed_types = ['audio/wav', 'audio/mpeg', 'audio/mp3', 'audio/webm', 'audio/ogg']
-    if audio.content_type not in allowed_types:
-        logger.warning(f"不支援的音頻類型: {audio.content_type}")
-        # 不嚴格限制，允許嘗試處理
+    # 1. 確定 session_id
+    current_session_id = session_id or str(uuid.uuid4())
     
-    temp_filename = f"stt_{uuid.uuid4().hex}_{audio.filename}"
-    temp_path = os.path.join(TEMP_DIR, temp_filename)
-    
+    # 2. 永久儲存音訊檔案
+    saved_audio_filename = f"user_{current_session_id}_{uuid.uuid4().hex}.wav"
+    saved_audio_path = os.path.join(AUDIO_DIR, saved_audio_filename)
+
     try:
-        # 保存上傳的音頻檔案
-        with open(temp_path, "wb") as f:
+        with open(saved_audio_path, "wb") as f:
             content = await audio.read()
             f.write(content)
         
-        logger.info(f"音頻檔案大小: {len(content)} bytes")
-        
-        # 檢查檔案大小
         if len(content) < 100:
             logger.warning("音頻檔案太小，可能是空檔案")
-            return STTResponse(text="", confidence=0.0)
+            return STTResponse(text="", confidence=0.0, session_id=current_session_id)
         
-        # 轉錄音頻
+        # 3. 轉錄音頻
         loop = asyncio.get_event_loop()
-        transcription = await loop.run_in_executor(executor, transcribe_audio, temp_path)
+        transcription = await loop.run_in_executor(executor, transcribe_audio, saved_audio_path)
+        user_text = transcription["text"].strip()
         
-        logger.info(f"轉錄結果: {transcription}")
+        logger.info(f"轉錄結果 for session {current_session_id}: {user_text}")
+        
+        # 4. 從資料庫獲取 agent_code 和 module_id
+        session_map = SessionLocal().query(SessionUserMap).filter(SessionUserMap.session_id == current_session_id).first()
+        if not session_map:
+             # 如果是第一次請求，可能還沒有 session_map，這是一個問題。
+             # 前端必須在進入聊天頁面時就呼叫 /create_session 來確保 session_map 存在。
+             # 這裡我們假設前端會先創建 session。
+             raise HTTPException(status_code=400, detail=f"Session {current_session_id} not found. Please create a session first.")
+        
+        # 5. 儲存使用者訊息到 ChatLog
+        if user_text:
+            user_message_log = save_chat_message(
+                role='user',
+                text=user_text,
+                session_id=current_session_id,
+                agent_code=session_map.agent_code,
+                module_id=session_map.module_id,
+                audio_filename=saved_audio_filename, # 儲存音檔名
+                return_obj=True
+            )
+            # 觸發背景評分
+            asyncio.create_task(score_utterance_task(user_message_log.id, current_session_id))
         
         return STTResponse(
-            text=transcription["text"],
-            confidence=transcription["confidence"]
+            text=user_text,
+            confidence=transcription["confidence"],
+            session_id=current_session_id # <--- 回傳 session_id
         )
         
     except Exception as e:
         logger.error(f"STT 處理錯誤: {e}")
         logger.error(traceback.format_exc())
-        return STTResponse(text="", confidence=0.0)
-    finally:
-        # 清理臨時檔案
-        if os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except Exception as e:
-                logger.warning(f"清理臨時檔案失敗: {e}")
+        # 即使出錯，也回傳 session_id 讓前端可以繼續
+        return STTResponse(text="", confidence=0.0, session_id=current_session_id)
+    # 注意：這裡不再清理 TEMP_DIR 中的檔案，因為我們直接存到 AUDIO_DIR
 
 @app.post("/stt-chunk", response_model=STTResponse)
 async def speech_to_text_chunk(audio: UploadFile = File(...)):
@@ -649,80 +674,72 @@ async def score_utterance_task(chat_log_id: int, session_id: str):
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_api(req: ChatRequest):
-    
-    """主要聊天 API"""
-    logger.info(f"收到聊天請求: {req.text[:50]}...")
+    """
+    主要聊天 API。
+    新職責：接收文字和 session_id，純粹地生成並回傳 AI 的下一句話。
+    不再儲存使用者訊息（已由 /stt 處理）。
+    """
+    logger.info(f"收到聊天請求 for session {req.session_id}: {req.text[:50]}...")
     
     user_text = req.text.strip()
-    #session_id 基本上會在進到聊天畫面時就會傳送給前端
-    #這樣就可以直接接收session_id 就設在SessionUserMap吧
-    session_id = req.session_id or str(uuid.uuid4())
+    session_id = req.session_id
     
-    if not user_text:
-        raise HTTPException(status_code=400, detail="訊息內容不能為空")
+    if not user_text or not session_id:
+        raise HTTPException(status_code=400, detail="訊息內容和 session_id 皆不能為空")
     
     try:
         # 從資料庫獲取 session_id 對應的模組 ID 和 agent_code
         session_map = SessionLocal().query(SessionUserMap).filter(SessionUserMap.session_id == session_id).first()
         if not session_map:
-            raise HTTPException(status_code=400, detail=f"Session {session_id} not found. Please create a session first.")
+            raise HTTPException(status_code=400, detail=f"Session {session_id} not found.")
         
         module_id = session_map.module_id
         agent_code = session_map.agent_code
         
-        # 儲存使用者訊息
-        #save_chat_message('user', user_text, session_id)
-        user_message_log = save_chat_message('user', user_text, session_id, agent_code, module_id, return_obj=True)
-        
-        asyncio.create_task(score_utterance_task(user_message_log.id, session_id))
-        
-        # --- NEW (Requirement 2): 觸發非同步背景總結任務 ---
-        # 這個檢查和任務創建不會阻塞後續的回應生成流程
+        # --- 移除儲存使用者訊息的邏輯 ---
+        # user_message_log = save_chat_message(...) <--- 刪除此行
+
+        # 觸發背景總結任務 (這部分邏輯不變)
         if await conversation_manager.should_summarize(session_id):
-            logger.info(f"觸發 Session {session_id} 的背景任務...")
-            # 使用 asyncio.create_task 將總結任務放到背景執行
+            logger.info(f"觸發 Session {session_id} 的背景總結任務...")
             asyncio.create_task(conversation_manager.summarize_conversation(session_id))
-            
         
         # --- 主要流程繼續 ---
-        
         agent_settings = get_agent_settings_as_dict(agent_code)
         if not agent_settings:
             raise HTTPException(status_code=404, detail=f"找不到 agent_code: {agent_code} 的设定")
         
-        logger.info(f"取得agent settings: {agent_settings['gender']}...")
-        
-        # 獲取對話歷史或總結
         history = await conversation_manager.get_formatted_history(session_id, limit=15)
-        
-        # 獲取預計算的答案
         precomputed_data_obj = SessionLocal().query(PrecomputedSessionAnswer).filter(PrecomputedSessionAnswer.session_id == session_id).first()
         precomputed_data_dict = {c.key: getattr(precomputed_data_obj, c.key) for c in precomputed_data_obj.__table__.columns} if precomputed_data_obj else None
         
-        # 使用模組管理器獲取對應模組的 patient_agent_builder
         patient_agent_builder = module_manager.get_patient_agent_builder(module_id)
-        
-        # 組合 prompt
         prompt = patient_agent_builder(user_text, history, agent_settings, precomputed_data_dict)
         
-        logger.info(f"使用的 prompt 長度: {len(prompt)} 字符")
-        
-        # 獲取模組配置以決定 LLM 模型
         module_config = module_manager.get_module_config(module_id)
-        
-        # 生成 LLM 回應
-        llm_response = await generate_llm_response(prompt, model_name=module_config.PATIENT_AGENT_MODEL_NAME) # 使用模組專屬 LLM
+        llm_response = await generate_llm_response(prompt, model_name=module_config.PATIENT_AGENT_MODEL_NAME)
                
         if llm_response.startswith("你："):
             llm_response = llm_response[5:].strip()
         
         logger.info(f"Patient 回應: {llm_response} for module {module_id}")
         
-        # 儲存 AI 回應
-        save_chat_message('patient', llm_response, session_id, agent_code, module_id)
+        # --- 修改儲存 AI 回應的邏輯 ---
+        # 1. 先生成 TTS 音頻，以獲取檔名
+        tts_audio_filename = await generate_tts_audio(llm_response, req.voice)
         
-        # 生成 TTS 音頻
-        audio_url = await generate_tts_audio(llm_response, req.voice)
+        # 2. 儲存 AI 回應到資料庫，同時傳入文字和音檔名
+        save_chat_message(
+            'patient', 
+            llm_response, 
+            session_id, 
+            agent_code, 
+            module_id,
+            audio_filename=tts_audio_filename
+        )
+        
+        # 3. 組合完整的 URL 給前端
+        audio_url = f"/audio/{tts_audio_filename}"
         
         return ChatResponse(
             text=llm_response,

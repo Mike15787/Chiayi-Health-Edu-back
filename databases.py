@@ -45,6 +45,7 @@ class ChatLog(Base):
     module_id = Column(String, nullable=False, default="default_module", comment="衛教模組ID") # 新增
     role = Column(String, nullable=False)
     text = Column(Text, nullable=False)
+    audio_filename = Column(String(255), nullable=True, comment="使用者音檔以及AI回應音檔檔名")
     time = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class AnswerLog(Base):
@@ -248,7 +249,7 @@ def get_latest_chat_history_for_scoring(session_id: str, limit: int = 4) -> list
     finally:
         db.close()
         
-def save_chat_message(role: str, text: str, session_id: str = None, agent_code: str = "default", module_id: str = "default_module", return_obj: bool = False):
+def save_chat_message(role: str, text: str, session_id: str = None, agent_code: str = "default", module_id: str = "default_module", return_obj: bool = False, audio_filename: Optional[str] = None):
     """保存聊天訊息到資料庫"""
     db = SessionLocal()
     try:
@@ -260,7 +261,8 @@ def save_chat_message(role: str, text: str, session_id: str = None, agent_code: 
             text=text, 
             session_id=session_id,
             agent_code=agent_code,
-            module_id=module_id # 新增 module_id
+            module_id=module_id, # 新增 module_id
+            audio_filename=audio_filename 
         )
         db.add(chat_log)
         db.commit()
