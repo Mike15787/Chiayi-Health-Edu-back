@@ -415,11 +415,20 @@ def transcribe_audio(audio_path: str) -> dict:
     if whisper_model is None:
         return {"text": "", "confidence": 0.0, "language": "zh"}
     
+    prompt_text = (
+        "以下是關於大腸鏡衛教的醫學對話。關鍵字包含:大腸鏡檢查、清腸劑、清腸藥、保可淨"
+        "低渣飲食、無渣流質飲食、瀉藥、麻醉、口服瀉藥錠劑、樂可舒"
+        "抗凝血劑藥物、抗血小板藥物、降血糖藥物、高血壓藥物、抗癲癇藥物"
+    )
+    
     try:
         result = whisper_model.transcribe(
             audio_path, 
             language="zh",
-            fp16=False
+            fp16=False,
+            initial_prompt=prompt_text, # <--- 關鍵修改在這裡
+            temperature=0.2, # 稍微降低隨機性，讓它更保守地依賴 prompt
+            beam_size=5      # 增加搜索廣度，提高準確率
         )
         
         text = result["text"].strip()
