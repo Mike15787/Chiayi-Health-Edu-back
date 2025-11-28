@@ -117,6 +117,9 @@ class Scores(Base):
     counseling_edu_score = Column(String, nullable=False, comment="諮商衛教分數")
     organization_efficiency_score = Column(String, nullable=False, comment="組織效率分數")
     clinical_judgment_score = Column(String, nullable=False, comment="臨床判斷分數")
+    humanitarian_score = Column(String, nullable=False, default="0", comment="人道專業分數")
+    organization_efficiency_score = Column(String, nullable=False, default="0", comment="組織效率分數")
+    overall_clinical_skills_score = Column(String, nullable=False, default="0", comment="整體臨床技能分數")
     
 class Summary(Base):
     __tablename__ = 'sessionid_summary'
@@ -128,6 +131,10 @@ class Summary(Base):
     counseling_edu_summary = Column(String, nullable=False, comment="諮商衛教總結")
     organization_efficiency_summary = Column(String, nullable=False, comment="組織效率總結")
     clinical_judgment_summary = Column(String, nullable=False, comment="臨床判斷總結")
+    # --- 新增欄位 ---
+    humanitarian_summary = Column(String, nullable=False, default="無", comment="人道專業總結")
+    organization_efficiency_summary = Column(String, nullable=False, default="無", comment="組織效率總結")
+    overall_clinical_skills_summary = Column(String, nullable=False, default="無", comment="整體臨床技能總結")
 
 class ConversationSummary(Base):
     __tablename__ = 'conversation_summary'

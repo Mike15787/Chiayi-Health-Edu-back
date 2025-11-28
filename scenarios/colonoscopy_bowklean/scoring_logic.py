@@ -10,11 +10,12 @@ from datetime import datetime
 from typing import List, Dict, Optional
 
 from utils import generate_llm_response
-from databases import AnswerLog, PrecomputedSessionAnswer, ScoringPromptLog, SessionUserMap, AgentSettings
+from databases import AnswerLog, PrecomputedSessionAnswer, ScoringPromptLog, SessionUserMap, AgentSettings, ChatLog, Scores
 from scenarios.colonoscopy_bowklean.config import (
     MODULE_ID, SCORING_CRITERIA_FILE, SCORING_MODEL_NAME, STRONGER_SCORING_MODEL_NAME,
-    MED_INSTRUCTIONS
+    MED_INSTRUCTIONS, CATEGORY_TO_FIELD_MAP, COMPOSITE_SUB_ITEM_IDS
 )
+from scenarios.colonoscopy_bowklean.summary_logic import calculate_organization_efficiency_score_llm
 
 logger = logging.getLogger(__name__)
 
@@ -420,3 +421,221 @@ class ColonoscopyBowkleanScoringLogic:
         [你的判斷 (只輸出 1 或 0)]:
         """
         return await self._call_llm_and_log(session_id, criterion['id'], prompt, SCORING_MODEL_NAME, db)
+    
+    # --- 新增：最終分數計算邏輯 ---
+    async def calculate_final_scores(self, session_id: str, db: Session) -> Dict[str, str]:
+        """
+        計算該 Session 的最終分數。
+        包含標準項目的累加以及特殊複合規則（如 S1-S4 藥物衛教）的計算。
+        """
+        logger.info(f"[{session_id}] Calculating final scores using module logic: {MODULE_ID}")
+        
+        # 1. 獲取所有已得分項目 ID
+        passed_items_query = db.query(AnswerLog.scoring_item_id).filter(
+            AnswerLog.session_id == session_id,
+            AnswerLog.score == 1
+        ).all()
+        passed_item_ids = {item.scoring_item_id for item in passed_items_query}
+        
+        # 2. 獲取 UI 互動產生的檢閱藥歷分數 (從 Scores 表讀取暫存值)
+        #    注意：main.py 在 end_chat 時會先存一次 UI 產生的 review_med_history_score
+        ui_score_record = db.query(Scores).filter(Scores.session_id == session_id).first()
+        ui_review_score = float(ui_score_record.review_med_history_score) if ui_score_record else 0.0
+        
+        # 3. 獲取對話紀錄 (用於計算時間和順序)
+        chat_logs = db.query(ChatLog).filter(ChatLog.session_id == session_id).order_by(ChatLog.time.asc()).all()
+        
+        # --- 初始化各類別分數 ---
+        scores = {key: 0.0 for key in CATEGORY_TO_FIELD_MAP.values()}
+        # 檢閱藥歷 = UI分數
+        scores["review_med_history_score"] = ui_review_score
+        
+        # --- 輔助函式：檢查是否通過 ---
+        def is_passed(item_id):
+            return 1 if item_id in passed_item_ids else 0
+
+        # 3. 建立 ID 到 Criterion 的快速查找表
+        criteria_map = {item['id']: item for item in self.criteria}
+
+        # 4. 計算【標準項目】的分數 (排除複合規則子項目)
+        for item_id in passed_item_ids:
+            if item_id in COMPOSITE_SUB_ITEM_IDS:
+                continue # 跳過複合規則的子項目，稍後單獨計算
+            
+            criterion = criteria_map.get(item_id)
+            if criterion:
+                weight = criterion.get('weight', 0.0)
+                category = criterion.get('category')
+                if category in CATEGORY_TO_FIELD_MAP:
+                    field_name = CATEGORY_TO_FIELD_MAP[category]
+                    scores[field_name] += weight
+
+        # 5. 根據規則計算【複合項目】的分數 (這是此模組特有的邏輯)
+        
+        # (A) 適切發問及引導 (Medical Interview) - 總分 4 分
+        # 規則: S2 和 S3 是 OR 閘 (共1分)，S1, S4, S5 各 1 分
+        pg_s1 = is_passed('proper_guidance_s1')
+        pg_s2 = is_passed('proper_guidance_s2')
+        pg_s3 = is_passed('proper_guidance_s3')
+        pg_s4 = is_passed('proper_guidance_s4')
+        pg_s5 = is_passed('proper_guidance_s5')
+        
+        pg_s2_s3_score = 1 if (pg_s2 + pg_s3) > 0 else 0
+        proper_guidance_total = pg_s1 + pg_s4 + pg_s5 + pg_s2_s3_score # Max 4
+
+        # 加回醫療面談分數
+        scores["medical_interview_score"] += proper_guidance_total
+        logger.info(f"適切發問及引導得分: {proper_guidance_total}")
+               
+        # (B) 藥物使用時機及方式 (Counseling)
+        # 規則: First(S1, S2) + Second(S1) -> 這裡 criteria 似乎有點變化，依 JSON 為準
+        # 假設 JSON 定義了 first_med...s1, s2 和 second...s1
+        med_mix_s1 = is_passed('first_med_mix_method_and_time.s1')
+        med_mix_s2 = is_passed('first_med_mix_method_and_time.s2')
+        med_mix_s3 = is_passed('second_med_mix_method_and_time.s1')
+        # 根據 JSON權重加總 (各0.5)
+        scores["counseling_edu_score"] += (med_mix_s1 * 0.5 + med_mix_s2 * 0.5 + med_mix_s3 * 0.5)
+
+        # (C) 水分補充與理想狀態 (Counseling)
+        hydro_s1 = is_passed('hydration_and_goal.s1')
+        hydro_s2 = is_passed('hydration_and_goal.s2')
+        scores["counseling_edu_score"] += (hydro_s1 * 1.0 + hydro_s2 * 1.0)
+
+        # --- 6. 計算【人道專業 (Humanitarian)】 (依賴其他項目) ---
+        # 規則 1: 表現尊重 (3分) -> 問好(1) + 坐下(1) + (適切發問(4)正規化為1)
+        respect_score = (
+            is_passed('greeting_hello') * 1 + 
+            is_passed('invite_to_sit') * 1 + 
+            (proper_guidance_total / 4.0) * 1  # 正規化
+        )
+        
+        # 規則 2: 同理心 (2分) -> 無術語(1) + 詢問經驗(1)
+        # 注意: review_med_history_1 在 JSON 是 "詢問經驗"，權重2，但在這裡是同理心+1
+        empathy_score = (
+            is_passed('no_use_term') * 1 +
+            is_passed('review_med_history_1') * 1
+        )
+        
+        scores["humanitarian_score"] += (respect_score + empathy_score)
+
+
+        # --- 7. 計算【組織效率 (Organization Efficiency)】 (複雜邏輯) ---
+        
+        # (A) 按優先順序處置 (3分)
+        # 使用 LLM 判斷順序 (飲食->口服->粉劑->禁水->其他)
+        full_history_text = "\n".join([f"{'學員' if l.role=='user' else '病患'}: {l.text}" for l in chat_logs])
+        # 呼叫 summary_logic 中的函數 (回傳 0-6 分)
+        seq_llm_score = await calculate_organization_efficiency_score_llm(full_history_text)
+        # 轉換規則: 如果順序大致正確(>4)得3分，否則1分
+        sequence_score = 3.0 if seq_llm_score >= 4 else 1.0
+        
+        # (B) 即時且適時 (1.5分)
+        time_score = 0.5
+        if chat_logs:
+            start_time = chat_logs[0].time
+            end_time = chat_logs[-1].time
+            duration_minutes = (end_time - start_time).total_seconds() / 60.0
+            if 5 <= duration_minutes <= 9:
+                time_score = 1.5
+            logger.info(f"衛教時間: {duration_minutes:.2f} 分鐘, 得分: {time_score}")
+        
+        # (C) 歷練而簡潔 (3.5分)
+        # 公式: 諮商衛教/6 + 醫療面談子項/6 + 檢閱藥歷子項/7
+        
+        # C-1: 諮商衛教總分
+        counseling_part = scores["counseling_edu_score"] / 6.0
+        
+        # C-2: 醫療面談子項 (確認本人+1, 適切發問+5) -> 這裡 Proper Guidance 算 5 分?
+        # 依 Prompt: "適切發問及引導...(+5分)"。我們先前算它是4分。這裡依公式需求視為5分(滿分)
+        # 假設如果 proper_guidance_total 滿分4分，這裡就給5分；按比例放大
+        pg_scaled_score = (proper_guidance_total / 4.0) * 5.0
+        interview_subset_score = is_passed('confirm_self_use') * 1 + pg_scaled_score
+        interview_part = interview_subset_score / 6.0
+        
+        # C-3: 檢閱藥歷子項 (查閱經驗+2, 查閱院內+3, 查閱院外+2) -> 總分7
+        # 假設 ui_review_score 已經包含了 UI 查閱的分數 (院內3+院外2=5)
+        # review_med_history_1 是對話查閱經驗 (+2)
+        # 我們將 UI分數 + 對話分數 視為分子
+        # (注意: review_med_history_1 在 JSON 權重是 2)
+        review_history_subset = ui_review_score + (is_passed('review_med_history_1') * 2)
+        # 這裡上限可能超過7 (如果UI有點滿)，做個 clamp 比較保險
+        review_history_subset = min(review_history_subset, 7.0)
+        review_part = review_history_subset / 7.0
+        
+        concise_score = (counseling_part + interview_part + review_part) * 3.5 # 這裡是否還要乘係數?
+        # Prompt 寫: "歷練而簡潔 +3.5分 (公式...)"，這通常表示公式的結果正規化後佔 3.5 分
+        # 公式內的除法已經是正規化 (例如 /6)，所以三個正規化值相加 (最大3.0)，再乘?
+        # 讓我們假設公式是: (Score1/6 + Score2/6 + Score3/7) / 3 * 3.5
+        # 或是直接加總? 如果各項滿分都是1，加起來是3。為了讓總分是3.5，需要 * (3.5/3)
+        concise_score = (counseling_part + interview_part + review_part) / 3.0 * 3.5
+        
+        scores["organization_efficiency_score"] += (sequence_score + time_score + concise_score)
+
+
+        # --- 8. 計算【臨床判斷 (Clinical Judgment)】 (額外計算) ---
+        # 規則 1: 判斷理解程度 (1分) -> `satisfy_patient_infomation` (JSON權重3) / 3
+        judge_understand_score = (is_passed('satisfy_patient_infomation') * 3.0) / 3.0
+        
+        # 規則 2: 判斷開立合理 (1分) -> `review_med_history_1` (JSON權重2) / 2
+        judge_reasonable_score = (is_passed('review_med_history_1') * 2.0) / 2.0
+        
+        scores["clinical_judgment_score"] += (judge_understand_score + judge_reasonable_score)
+
+
+        # --- 9. 計算【整體臨床技能 (Overall Clinical Skills)】 ---
+        
+        # (A) 態度 (3分): 醫療面談/6 + 人道專業/6
+        attitude_score = (scores["medical_interview_score"] / 6.0 + scores["humanitarian_score"] / 6.0) / 2.0 * 3.0
+        # 這裡假設兩個正規化分數平均後，佔 3 分
+        
+        # (B) 整合能力 (4分): 檢閱藥歷/6 + 醫療面談子項2/6 + 臨床判斷/6
+        # 檢閱藥歷總分: scores["review_med_history_score"] (含UI+對話)
+        # 醫療面談子項2: 確認本人(1) + 適切發問(4) + 無術語(1) = 6
+        interview_subset2 = is_passed('confirm_self_use') + proper_guidance_total + is_passed('no_use_term')
+        
+        integration_score = (
+            (scores["review_med_history_score"] / 6.0) + 
+            (interview_subset2 / 6.0) + 
+            (scores["clinical_judgment_score"] / 6.0)
+        ) / 3.0 * 4.0
+        
+        # (C) 整體有效性 (2分): 6大類平均 / 3 ?? 
+        # Prompt: [6類得分/9 的總和] / 3 ? 
+        # 假設意思是：將前6大類的分數都正規化 (除以9，假設滿分是9?)，然後平均，再佔2分
+        # 讓我們假設各類別滿分約為 6~9 分。
+        sum_normalized = (
+            scores["review_med_history_score"] +
+            scores["medical_interview_score"] +
+            scores["counseling_edu_score"] +
+            scores["humanitarian_score"] +
+            scores["organization_efficiency_score"] +
+            scores["clinical_judgment_score"]
+        ) / 9.0 # 這裡除以9可能是因為有些類別滿分接近9
+        
+        effectiveness_score = (sum_normalized / 6.0) * 2.0 # 平均後佔2分
+        # 修正: Prompt 寫 [Sum of (Score/9)] / 3。我們先照 Prompt 寫
+        effectiveness_score = sum_normalized / 3.0 # 這樣如果滿分，結果會是 6/3 = 2。符合。
+        
+        scores["overall_clinical_skills_score"] += (attitude_score + integration_score + effectiveness_score)
+
+        # --- 10. 計算總分並格式化 ---
+        total_score = sum(scores.values())
+        
+        # 將所有數值轉為字串格式
+        result = {key: str(round(value, 2)) for key, value in scores.items()}
+        # 加上總分 (注意: overall 算在總分裡嗎? 通常 Overall 是獨立指標，不疊加進 Total)
+        # 如果 Overall 是包含在 Total 裡的，那就重複計算了。
+        # 通常 Total Score 是前 6 項的總和。Overall 是另外的評價。
+        # 根據一般邏輯，Total 不應包含 Overall。
+        real_total = (
+            scores["review_med_history_score"] +
+            scores["medical_interview_score"] +
+            scores["counseling_edu_score"] +
+            scores["humanitarian_score"] +
+            scores["organization_efficiency_score"] +
+            scores["clinical_judgment_score"]
+        )
+        result['total_score'] = str(round(real_total, 2))
+        
+        logger.info(f"[{session_id}] Final Scores: {result}")
+        return result

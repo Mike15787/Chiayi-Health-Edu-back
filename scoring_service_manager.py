@@ -40,7 +40,30 @@ class ScoringServiceManager:
             session_id, chat_snippet, db
         )
         return newly_passed_item_ids
+    
+    async def calculate_final_scores(self, session_id: str, module_id: str, db: Session) -> Dict[str, str]:
+        """
+        將「最終分數計算任務」委派給特定模組。
+        """
+        scoring_logic = self._get_scoring_logic(module_id)
 
+        # 檢查該模組是否有實作 calculate_final_scores
+        if hasattr(scoring_logic, 'calculate_final_scores'):
+            return await scoring_logic.calculate_final_scores(session_id, db)
+        else:
+            logger.error(f"Module {module_id} does not implement calculate_final_scores.")
+            # 回傳預設零分，避免崩潰
+            return {
+                "total_score": "0.00",
+                "review_med_history_score": "0.00",
+                "medical_interview_score": "0.00",
+                "counseling_edu_score": "0.00",
+                "organization_efficiency_score": "0.00",
+                "clinical_judgment_score": "0.00",
+                "humanitarian_score": "0.00",
+                "overall_clinical_skills_score": "0.00"
+            }
+    
     def get_scoring_criteria_map(self, module_id: str) -> Dict[str, Dict]:
         """獲取指定模組的評分標準映射"""
         return {item['id']: item for item in self._get_scoring_logic(module_id).criteria}

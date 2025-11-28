@@ -22,12 +22,15 @@ CATEGORY_TO_FIELD_MAP = {
     "檢閱藥歷": "review_med_history_score",
     "醫療面談": "medical_interview_score",
     "諮商衛教": "counseling_edu_score",
-    "臨床判斷": "clinical_judgment_score"
+    "人道專業": "humanitarian_score",
+    "組織效率": "organization_efficiency_score",  # 新增
+    "臨床判斷": "clinical_judgment_score",
+    "整體臨床技能": "overall_clinical_skills_score" # 新增
 }
 
 # 定義所有複合規則的子項目ID (用於總分計算時排除重複計分)
 COMPOSITE_SUB_ITEM_IDS = {
-    'proper_guidance_s1', 'proper_guidance_s2', 'proper_guidance_s3', 'proper_guidance_s4',
+    'proper_guidance_s1', 'proper_guidance_s2', 'proper_guidance_s3', 'proper_guidance_s4', 'proper_guidance_s5',
     'med_usage_timing_method.s1', 'med_usage_timing_method.s2',
     'hydration_and_goal.s1', 'hydration_and_goal.s2'
 }

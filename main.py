@@ -39,6 +39,7 @@ from databases import (
     ChatLog,
     AnswerLog,
     UserLogin,
+    Scores,
     AgentSettings,
     SessionUserMap,
     ScoringAttributionLog,
@@ -224,6 +225,13 @@ class SessionInfo(BaseModel):
     agent_code: str
     module_id: str = "colonoscopy_bowklean" # 預設為現有模組
 
+# --- New Pydantic Model for Ending Chat ---
+class EndChatRequest(BaseModel):
+    viewed_alltimes_ci: bool = False # 歷次清腸資訊
+    viewed_chiachi_med: bool = False # 本院用藥
+    viewed_med_allergy: bool = False # 藥物過敏史
+    viewed_disease_diag: bool = False # 疾病診斷
+    viewed_cloud_med: bool = False   # 雲端藥歷
 
 # --- 對話管理類別 ---
 class ConversationManager:
@@ -763,10 +771,13 @@ async def chat_api(req: ChatRequest):
         raise HTTPException(status_code=500, detail=f"處理聊天請求時發生錯誤: {str(e)}")
 
 @app.post("/chat/end/{session_id}")
-async def end_chat_session(session_id: str = Path(..., description="要結束的對話 Session ID")):
+async def end_chat_session(
+    session_id: str = Path(..., description="要結束的對話 Session ID"),
+    req: EndChatRequest = None # Make it optional/default to handle potential legacy calls, though ideally strict
+):
     """
     標記一個對話 session 為已結束 (is_completed = True)。
-    這個動作是評分的前提。
+    同時接收前端傳來的檢閱藥歷互動紀錄，計算分數並存入 Scores 表。
     """
     db = SessionLocal()
     try:
@@ -778,13 +789,47 @@ async def end_chat_session(session_id: str = Path(..., description="要結束的
             logger.info(f"Session {session_id} 已被標記為結束。")
             return {"status": "already_ended", "message": "Session was already marked as completed."}
 
+        # 1. 標記完成
         session_map.is_completed = True
+        
+        # 2. 計算檢閱藥歷分數 (如果有點開過)
+        if req:
+            score = 0
+            if req.viewed_alltimes_ci: score += 2
+            if req.viewed_chiachi_med: score += 3
+            if req.viewed_med_allergy: score += 1
+            if req.viewed_disease_diag: score += 1
+            if req.viewed_cloud_med:   score += 2
+            
+            logger.info(f"Session {session_id} 檢閱藥歷得分計算: {score}")
+
+            # 檢查 Scores 表中是否已有該 session 紀錄
+            score_record = db.query(Scores).filter(Scores.session_id == session_id).first()
+            
+            if not score_record:
+                # 建立新紀錄
+                score_record = Scores(
+                    session_id=session_id,
+                    module_id=session_map.module_id,
+                    total_score="0", # 初始化
+                    review_med_history_score=str(score), # 存入計算後的檢閱分數
+                    medical_interview_score="0",
+                    counseling_edu_score="0",
+                    organization_efficiency_score="0",
+                    clinical_judgment_score="0"
+                )
+                db.add(score_record)
+            else:
+                # 更新現有紀錄
+                score_record.review_med_history_score = str(score)
+        
         db.commit()
-        logger.info(f"Session {session_id} 已成功標記為結束。")
+        logger.info(f"Session {session_id} 已成功標記為結束，且檢閱藥歷分數已更新。")
         return {"status": "ended", "message": "Session marked as completed successfully."}
     except Exception as e:
         db.rollback()
         logger.error(f"標記 Session 結束時發生錯誤: {e}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail="標記對話結束時發生內部錯誤。")
     finally:
         db.close()
