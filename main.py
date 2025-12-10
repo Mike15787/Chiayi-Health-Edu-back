@@ -46,6 +46,7 @@ from databases import (
     get_latest_user_messages,
     get_latest_chat_history_for_scoring,
     PrecomputedSessionAnswer,
+    SessionInteractionLog,
     get_module_id_by_session
 )
 
@@ -136,7 +137,7 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "http://127.0.0.1:8080",
         "http://127.0.0.1:5173",
-        "https://d45b0af2cc23.ngrok-free.app"
+        "https://3da8f686e88f.ngrok-free.app  "
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -773,11 +774,11 @@ async def chat_api(req: ChatRequest):
 @app.post("/chat/end/{session_id}")
 async def end_chat_session(
     session_id: str = Path(..., description="要結束的對話 Session ID"),
-    req: EndChatRequest = None # Make it optional/default to handle potential legacy calls, though ideally strict
+    req: EndChatRequest = None 
 ):
     """
     標記一個對話 session 為已結束 (is_completed = True)。
-    同時接收前端傳來的檢閱藥歷互動紀錄，計算分數並存入 Scores 表。
+    同時接收前端傳來的檢閱藥歷互動紀錄，並儲存到資料庫供後續評分使用。
     """
     db = SessionLocal()
     try:
@@ -785,47 +786,40 @@ async def end_chat_session(
         if not session_map:
             raise HTTPException(status_code=404, detail="指定的 Session 不存在")
 
-        if session_map.is_completed:
-            logger.info(f"Session {session_id} 已被標記為結束。")
-            return {"status": "already_ended", "message": "Session was already marked as completed."}
-
         # 1. 標記完成
-        session_map.is_completed = True
+        if not session_map.is_completed:
+            session_map.is_completed = True
         
-        # 2. 計算檢閱藥歷分數 (如果有點開過)
+        # 2. 儲存 UI 互動紀錄 (不再這裡計算分數)
         if req:
-            score = 0
-            if req.viewed_alltimes_ci: score += 2
-            if req.viewed_chiachi_med: score += 3
-            if req.viewed_med_allergy: score += 1
-            if req.viewed_disease_diag: score += 1
-            if req.viewed_cloud_med:   score += 2
-            
-            logger.info(f"Session {session_id} 檢閱藥歷得分計算: {score}")
+            logger.info(f"Session {session_id} 接收到 UI 互動紀錄，正在儲存...")
 
-            # 檢查 Scores 表中是否已有該 session 紀錄
-            score_record = db.query(Scores).filter(Scores.session_id == session_id).first()
+            # 檢查是否已有紀錄，有則更新，無則新增
+            interaction_record = db.query(SessionInteractionLog).filter(SessionInteractionLog.session_id == session_id).first()
             
-            if not score_record:
-                # 建立新紀錄
-                score_record = Scores(
+            if not interaction_record:
+                interaction_record = SessionInteractionLog(
                     session_id=session_id,
                     module_id=session_map.module_id,
-                    total_score="0", # 初始化
-                    review_med_history_score=str(score), # 存入計算後的檢閱分數
-                    medical_interview_score="0",
-                    counseling_edu_score="0",
-                    organization_efficiency_score="0",
-                    clinical_judgment_score="0"
+                    viewed_alltimes_ci=req.viewed_alltimes_ci,
+                    viewed_chiachi_med=req.viewed_chiachi_med,
+                    viewed_med_allergy=req.viewed_med_allergy,
+                    viewed_disease_diag=req.viewed_disease_diag,
+                    viewed_cloud_med=req.viewed_cloud_med
                 )
-                db.add(score_record)
+                db.add(interaction_record)
             else:
                 # 更新現有紀錄
-                score_record.review_med_history_score = str(score)
+                interaction_record.viewed_alltimes_ci = req.viewed_alltimes_ci
+                interaction_record.viewed_chiachi_med = req.viewed_chiachi_med
+                interaction_record.viewed_med_allergy = req.viewed_med_allergy
+                interaction_record.viewed_disease_diag = req.viewed_disease_diag
+                interaction_record.viewed_cloud_med = req.viewed_cloud_med
         
         db.commit()
-        logger.info(f"Session {session_id} 已成功標記為結束，且檢閱藥歷分數已更新。")
-        return {"status": "ended", "message": "Session marked as completed successfully."}
+        logger.info(f"Session {session_id} 已成功標記為結束，UI 互動紀錄已儲存。")
+        return {"status": "ended", "message": "Session marked as completed and interaction logged."}
+        
     except Exception as e:
         db.rollback()
         logger.error(f"標記 Session 結束時發生錯誤: {e}")

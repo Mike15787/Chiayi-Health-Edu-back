@@ -181,6 +181,21 @@ class ScoringAttributionLog(Base):
     # 確保每個句子對應的評分項是唯一的
     __table_args__ = (UniqueConstraint('chat_log_id', 'scoring_item_id', name='_chat_item_uc'),)
 
+class SessionInteractionLog(Base):
+    __tablename__ = 'session_interaction_log'
+    
+    session_id = Column(String, primary_key=True, comment="對應的 Session ID")
+    module_id = Column(String, nullable=False, default="default_module", comment="衛教模組ID")
+    
+    # 記錄各個按鈕是否被點擊 (True/False)
+    viewed_alltimes_ci = Column(Boolean, default=False, comment="是否檢閱歷次清腸資訊")
+    viewed_chiachi_med = Column(Boolean, default=False, comment="是否檢閱本院用藥")
+    viewed_med_allergy = Column(Boolean, default=False, comment="是否檢閱藥物過敏史")
+    viewed_disease_diag = Column(Boolean, default=False, comment="是否檢閱疾病診斷")
+    viewed_cloud_med = Column(Boolean, default=False, comment="是否檢閱雲端藥歷")
+    
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
 # --- 資料庫初始化函數 ---
 def init_database():
     """初始化資料庫，創建所有表格"""

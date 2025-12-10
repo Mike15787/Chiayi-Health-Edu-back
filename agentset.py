@@ -30,7 +30,8 @@ data_list = [
         "payment_fee": "4500",
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
-        "chemical_type": "保可淨"
+        "chemical_type": "保可淨",
+        "drug_combination": "組合一"
     },
     {
         "agent_code": "A2",
@@ -48,7 +49,8 @@ data_list = [
         "payment_fee": "4500",
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
-        "chemical_type": "保可淨"
+        "chemical_type": "保可淨",
+        "drug_combination": "組合一"
     },
     {
         "agent_code": "A3",
@@ -66,7 +68,8 @@ data_list = [
         "payment_fee": "4500",
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
-        "chemical_type": "保可淨"
+        "chemical_type": "保可淨",
+        "drug_combination": "組合一"
     },
     {
         "agent_code": "A4",
@@ -84,7 +87,8 @@ data_list = [
         "payment_fee": "800",
         "laxative_experience": "有",
         "edu_type": "清腸劑衛教",
-        "chemical_type": "保可淨"
+        "chemical_type": "保可淨",
+        "drug_combination": "組合一"
     },
     {
         "agent_code": "A5",
@@ -102,7 +106,8 @@ data_list = [
         "payment_fee": "800",
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
-        "chemical_type": "保可淨"
+        "chemical_type": "保可淨",
+        "drug_combination": "組合一"
     },
     {
         "agent_code": "B1",
@@ -120,7 +125,8 @@ data_list = [
         "payment_fee": "4500",
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
-        "chemical_type": "保可淨"
+        "chemical_type": "保可淨",
+        "drug_combination": "組合一"
     },
     {
         "agent_code": "B2",
@@ -138,7 +144,8 @@ data_list = [
         "payment_fee": "4500",
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
-        "chemical_type": "保可淨"
+        "chemical_type": "保可淨",
+        "drug_combination": "組合一"
     },
     {
         "agent_code": "B3",
@@ -156,7 +163,8 @@ data_list = [
         "payment_fee": "800",
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
-        "chemical_type": "保可淨"
+        "chemical_type": "保可淨",
+        "drug_combination": "組合一"
     },
     {
         "agent_code": "B4",
@@ -174,7 +182,8 @@ data_list = [
         "payment_fee": "800",
         "laxative_experience": "有",
         "edu_type": "清腸劑衛教",
-        "chemical_type": "保可淨"
+        "chemical_type": "保可淨",
+        "drug_combination": "組合一"
     },
     {
         "agent_code": "B5",
@@ -192,7 +201,8 @@ data_list = [
         "payment_fee": "4500",
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
-        "chemical_type": "保可淨"
+        "chemical_type": "保可淨",
+        "drug_combination": "組合一"
     },
     {
         "agent_code": "C1",
@@ -210,7 +220,8 @@ data_list = [
         "payment_fee": "4500",
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
-        "chemical_type": "保可淨"
+        "chemical_type": "保可淨",
+        "drug_combination": "組合一"
     },
     {
         "agent_code": "C2",
@@ -228,7 +239,8 @@ data_list = [
         "payment_fee": "4500",
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
-        "chemical_type": "保可淨"
+        "chemical_type": "保可淨",
+        "drug_combination": "組合一"
     },
     {
         "agent_code": "C3",
@@ -246,7 +258,8 @@ data_list = [
         "payment_fee": "800",
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
-        "chemical_type": "保可淨"
+        "chemical_type": "保可淨",
+        "drug_combination": "組合一"
     },
     {
         "agent_code": "C4",
@@ -264,7 +277,8 @@ data_list = [
         "payment_fee": "800",
         "laxative_experience": "有",
         "edu_type": "清腸劑衛教",
-        "chemical_type": "保可淨"
+        "chemical_type": "保可淨",
+        "drug_combination": "組合二"
     },
     {
         "agent_code": "C5",
@@ -282,10 +296,10 @@ data_list = [
         "payment_fee": "800",
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
-        "chemical_type": "保可淨"
+        "chemical_type": "保可淨",
+        "drug_combination": "組合一"
     }
 ]
-
 def insert_agent_data():
     """將病例資料插入到資料庫"""
     db = SessionLocal()
