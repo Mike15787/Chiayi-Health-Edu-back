@@ -1,5 +1,5 @@
 from databases import SessionLocal, AgentSettings
-
+import logging
 # 欄位說明
 # agent_code 表示目前難度
 # med_code 表示是否有特殊用藥
@@ -300,6 +300,9 @@ data_list = [
         "drug_combination": "組合一"
     }
 ]
+
+logger = logging.getLogger(__name__)
+
 def insert_agent_data():
     """將病例資料插入到資料庫"""
     db = SessionLocal()

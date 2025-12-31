@@ -5,11 +5,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 import logging
 import json
-from typing import List, Any
+from typing import Dict, List, Any
 from datetime import datetime
 from utils import generate_llm_response
 from databases import (
-    get_db, ChatLog, AgentSettings, SessionUserMap, Scores, Summary, ScoringAttributionLog,
+    get_db, ChatLog, AgentSettings, SessionUserMap, ScoringAttributionLog, Scores, Summary, AnswerLog, SessionInteractionLog,
     get_module_id_by_session
 )
 
@@ -22,6 +22,24 @@ score_router = APIRouter(prefix="/scoring", tags=["Scoring"])
 class FinishRequest(BaseModel):
     session_id: str
     username: str
+    
+# --- 新增 Pydantic Models ---
+class ScoreItemDetail(BaseModel):
+    item_id: str
+    item_name: str          # item
+    description: str        # 任務說明
+    weight: float           # weight (滿分)
+    user_score: float       # 實際得分
+    scoring_type: str       # type (評分方法)
+    relevant_dialogues: List[str] = [] # 相關對話內容
+
+class CategoryDetail(BaseModel):
+    category_name: str
+    items: List[ScoreItemDetail]
+
+class DetailedScoreResponse(BaseModel):
+    session_id: str
+    details: Dict[str, CategoryDetail] # key 是 category 名稱 (如 "醫療面談")
 
 # --- Pydantic Models (對應新的資料庫欄位) ---
 class ScoresModel(BaseModel):
@@ -212,6 +230,38 @@ async def finish_and_score_session(request: FinishRequest, db: Session = Depends
         logger.error(f"未預期的錯誤: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@score_router.get("/details/{session_id}", response_model=DetailedScoreResponse)
+async def get_score_details(session_id: str, db: Session = Depends(get_db)):
+    """
+    獲取詳細的評分細節。邏輯已委派給各個模組。
+    """
+    # 1. 取得 Session 對應的 module_id
+    session_map = db.query(SessionUserMap).filter(SessionUserMap.session_id == session_id).first()
+    if not session_map:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    module_id = session_map.module_id
+
+    # 2. 確保 Service 已初始化
+    if scoring_service is None:
+         raise HTTPException(status_code=500, detail="Scoring Service not initialized")
+
+    try:
+        # 3. 呼叫 Manager -> Module 取得詳細資料
+        # 注意：這裡回傳的格式是一個 Dict，符合 DetailedScoreResponse 的結構
+        details_dict = await scoring_service.get_detailed_scores(session_id, module_id, db)
+        
+        return DetailedScoreResponse(
+            session_id=session_id,
+            details=details_dict
+        )
+
+    except Exception as e:
+        logger.error(f"Error fetching detailed scores for session {session_id}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to generate score details: {str(e)}")
+    
 @score_router.get("/summary/{session_id}", response_model=SummaryResponse)
 async def get_summary_data(session_id: str, db: Session = Depends(get_db)):
     session_map = db.query(SessionUserMap).filter(SessionUserMap.session_id == session_id).first()
@@ -240,9 +290,13 @@ async def get_summary_data(session_id: str, db: Session = Depends(get_db)):
 
 @score_router.get("/feedback/{session_id}", response_model=FullFeedbackResponse)
 async def get_full_feedback(session_id: str, db: Session = Depends(get_db)):
-    chat_logs = db.query(ChatLog).filter(ChatLog.session_id == session_id).order_by(ChatLog.time.asc()).all()
-    if not chat_logs:
+    
+    # 1. 先檢查 Session 是否存在 (而不是檢查有沒有對話)
+    session_map = db.query(SessionUserMap).filter(SessionUserMap.session_id == session_id).first()
+    if not session_map:
         raise HTTPException(status_code=404, detail="Session not found")
+    
+    chat_logs = db.query(ChatLog).filter(ChatLog.session_id == session_id).order_by(ChatLog.time.asc()).all()
 
     module_id = get_module_id_by_session(session_id)
     if not module_id: module_id = "colonoscopy_bowklean"

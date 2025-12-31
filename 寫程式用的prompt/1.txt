@@ -1,0 +1,32 @@
+這是我的專案 目前這整個專案已經要給其他人進行測試 所以測試的資料非常重要 我想要盡可能的保留
+為此我想要額外建立一個新的資料庫 用來儲存給其他人進行測試的結果
+這樣子原本的資料庫就是我自己在進行本地實測要修改資料庫就可以一樣只需要整個刪掉重跑就好
+那就有一點很重要 就是切換資料庫 我是在想說 能不能像是打個指令或什麼的
+讓系統知道我現在是要給人做測試 然後就會切換到用來儲存測試結果的資料庫
+就是要讓整個系統可以方便去做測試 你可以先給我修改的方向嗎
+
+這個專案是一個前後端分離的專案 前端是vue+js 後端是python + fastapi 整個用途是使用者(藥師)可以跟Ai agent扮演的病患 練習像是大腸鏡衛教、抗凝血劑衛教等 藥物衛教的系統 所以有額外設計一個評分標準 透過LLM去判斷使用者對著ai虛擬病人的衛教內容是否正確
+
+
+以下是我的專案架構
+HEALTHCARE_BACKEND
+    - scenarios
+        - colonoscopy_bowklean
+            - config.py
+            - patient_agent.py
+            - precomputation_logic.py
+            - scoring_criteria_vs.json
+            - scoring_logic.py
+            - summary_logic.py
+        - colonoscopy_GI_Klean
+            暫略
+    - agentset.py
+    - databases.py
+    - FindHistory.py
+    - Login.py
+    - main.py
+    - module_manager.py
+    - scoring_service_manager.py
+    - Scoring.py
+    - utils.py
+

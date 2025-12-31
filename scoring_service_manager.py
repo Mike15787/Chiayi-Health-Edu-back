@@ -64,6 +64,20 @@ class ScoringServiceManager:
                 "overall_clinical_skills_score": "0.00"
             }
     
+    async def get_detailed_scores(self, session_id: str, module_id: str, db: Session) -> Dict[str, Any]:
+        """
+        獲取指定模組的詳細評分結構。
+        這會呼叫各模組 scoring_logic.py 中的 get_detailed_scores 方法。
+        """
+        scoring_logic = self._get_scoring_logic(module_id)
+
+        # 檢查該模組是否有實作 get_detailed_scores
+        if hasattr(scoring_logic, 'get_detailed_scores'):
+            return await scoring_logic.get_detailed_scores(session_id, db)
+        else:
+            logger.warning(f"Module {module_id} does not implement get_detailed_scores. Returning empty details.")
+            return {}
+    
     def get_scoring_criteria_map(self, module_id: str) -> Dict[str, Dict]:
         """獲取指定模組的評分標準映射"""
         return {item['id']: item for item in self._get_scoring_logic(module_id).criteria}
@@ -79,3 +93,5 @@ class ScoringServiceManager:
     def get_org_efficiency_scorer(self, module_id: str) -> Any:
         """獲取指定模組的組織效率評分器函數"""
         return self.module_manager.get_org_efficiency_scorer(module_id)
+    
+    
