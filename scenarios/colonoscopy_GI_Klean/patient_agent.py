@@ -1,4 +1,4 @@
-# scenarios/colonoscopy_bowklean/patient_agent.py
+# modules/colonoscopy_GI_Klean/patient_agent.py
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, Optional

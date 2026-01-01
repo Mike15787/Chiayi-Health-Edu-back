@@ -1,16 +1,16 @@
-# modules/colonoscopy_bowklean/precomputation_logic.py
+# modules/colonoscopy_GI_Klean/precomputation_logic.py
 import logging
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from databases import AgentSettings, PrecomputedSessionAnswer
-from scenarios.colonoscopy_bowklean.config import MODULE_ID  # 引入模組ID
+from scenarios.colonoscopy_GI_Klean.config import MODULE_ID  # 引入模組ID
 
 logger = logging.getLogger(__name__)
 
 
 async def perform_precomputation(session_id: str, agent_code: str, db: Session):
     """
-    為 colonoscopy_bowklean 模組預先計算並儲存答案。
+    為 colonoscopy_GI_Klean 模組預先計算並儲存答案。
     """
     agent_settings = (
         db.query(AgentSettings).filter(AgentSettings.agent_code == agent_code).first()

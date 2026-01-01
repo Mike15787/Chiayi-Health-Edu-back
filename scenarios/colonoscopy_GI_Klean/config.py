@@ -1,8 +1,8 @@
-# HEALTHCARE_BACKEND/scenerios/colonoscopy_bowklean/config.py
+# scenerios/colonoscopy_GI_Klean/config.py
 
-MODULE_ID = "colonoscopy_bowklean"
+MODULE_ID = "colonoscopy_GI_Klean"
 SCORING_CRITERIA_FILE = (
-    "scenarios/colonoscopy_bowklean/scoring_criteria_v2.json"  # 相對於專案根目錄
+    "scenarios/colonoscopy_GI_Klean/scoring_criteria.json"  # 相對於專案根目錄
 )
 PATIENT_AGENT_MODEL_NAME = "gemma3:4b"  # 病患 AI 使用的模型
 SCORING_MODEL_NAME = "gemma3:4b"  # 評分 LLM 使用的模型
@@ -25,9 +25,9 @@ CATEGORY_TO_FIELD_MAP = {
     "醫療面談": "medical_interview_score",
     "諮商衛教": "counseling_edu_score",
     "人道專業": "humanitarian_score",
-    "組織效率": "organization_efficiency_score",  # 新增
+    "組織效率": "organization_efficiency_score",
     "臨床判斷": "clinical_judgment_score",
-    "整體臨床技能": "overall_clinical_skills_score",  # 新增
+    "整體臨床技能": "overall_clinical_skills_score",
 }
 
 # 定義所有複合規則的子項目ID (用於總分計算時排除重複計分)

@@ -1,10 +1,12 @@
+# /agentset.py
 from databases import SessionLocal, AgentSettings
 import logging
+
 # 欄位說明
 # agent_code 表示目前難度
 # med_code 表示是否有特殊用藥
 
-# 在特殊設定(special_status)包含 "不知道檢查型態" 目前check_type 會需要要再加入"不知道" 
+# 在特殊設定(special_status)包含 "不知道檢查型態" 目前check_type 會需要要再加入"不知道"
 # 新增欄位 繳交費用 800/4500
 
 # 新增欄位 過去有沒有用過瀉藥經驗
@@ -12,6 +14,8 @@ import logging
 # 10/27 新增欄位 edu_type 清腸劑衛教、W抗凝、D抗凝、慢性
 #       新增欄位 chemical_type 保可淨、腸見淨、其他抗凝藥劑
 
+# agentsetting 這邊要怎麼改
+# 如果說我把agentset 也根據module放呢
 
 data_list = [
     {
@@ -31,7 +35,7 @@ data_list = [
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
-        "drug_combination": "組合一"
+        "drug_combination": "組合一",
     },
     {
         "agent_code": "A2",
@@ -50,7 +54,7 @@ data_list = [
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
-        "drug_combination": "組合一"
+        "drug_combination": "組合一",
     },
     {
         "agent_code": "A3",
@@ -69,7 +73,7 @@ data_list = [
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
-        "drug_combination": "組合一"
+        "drug_combination": "組合一",
     },
     {
         "agent_code": "A4",
@@ -88,7 +92,7 @@ data_list = [
         "laxative_experience": "有",
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
-        "drug_combination": "組合一"
+        "drug_combination": "組合一",
     },
     {
         "agent_code": "A5",
@@ -107,7 +111,7 @@ data_list = [
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
-        "drug_combination": "組合一"
+        "drug_combination": "組合一",
     },
     {
         "agent_code": "B1",
@@ -126,7 +130,7 @@ data_list = [
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
-        "drug_combination": "組合一"
+        "drug_combination": "組合一",
     },
     {
         "agent_code": "B2",
@@ -145,7 +149,7 @@ data_list = [
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
-        "drug_combination": "組合一"
+        "drug_combination": "組合一",
     },
     {
         "agent_code": "B3",
@@ -164,7 +168,7 @@ data_list = [
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
-        "drug_combination": "組合一"
+        "drug_combination": "組合一",
     },
     {
         "agent_code": "B4",
@@ -183,7 +187,7 @@ data_list = [
         "laxative_experience": "有",
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
-        "drug_combination": "組合一"
+        "drug_combination": "組合一",
     },
     {
         "agent_code": "B5",
@@ -202,7 +206,7 @@ data_list = [
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
-        "drug_combination": "組合一"
+        "drug_combination": "組合一",
     },
     {
         "agent_code": "C1",
@@ -221,7 +225,7 @@ data_list = [
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
-        "drug_combination": "組合一"
+        "drug_combination": "組合一",
     },
     {
         "agent_code": "C2",
@@ -240,7 +244,7 @@ data_list = [
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
-        "drug_combination": "組合一"
+        "drug_combination": "組合一",
     },
     {
         "agent_code": "C3",
@@ -259,7 +263,7 @@ data_list = [
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
-        "drug_combination": "組合一"
+        "drug_combination": "組合一",
     },
     {
         "agent_code": "C4",
@@ -278,7 +282,7 @@ data_list = [
         "laxative_experience": "有",
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
-        "drug_combination": "組合二"
+        "drug_combination": "組合二",
     },
     {
         "agent_code": "C5",
@@ -297,11 +301,12 @@ data_list = [
         "laxative_experience": "無",
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
-        "drug_combination": "組合一"
-    }
+        "drug_combination": "組合一",
+    },
 ]
 
 logger = logging.getLogger(__name__)
+
 
 def insert_agent_data():
     """將病例資料插入到資料庫"""
@@ -310,31 +315,34 @@ def insert_agent_data():
         # 先檢查是否已存在資料，避免重複插入
         existing_agents = db.query(AgentSettings).all()
         existing_codes = [agent.agent_code for agent in existing_agents]
-        
+
         inserted_count = 0
         for item in data_list:
             # --- 新增：資料預處理邏輯 ---
             if "不知道檢查型態" in item.get("special_status", ""):
                 item["check_type"] = "不知道"
             # --- 結束 ---
-            
+
             if item["agent_code"] not in existing_codes:
                 agent = AgentSettings(**item)
                 db.add(agent)
                 inserted_count += 1
-                print(f"插入病例: {item['agent_code']} - {item['gender']} {item['age']}")
+                print(
+                    f"插入病例: {item['agent_code']} - {item['gender']} {item['age']}"
+                )
             else:
                 print(f"病例 {item['agent_code']} 已存在，跳過插入")
-        
+
         db.commit()
         print(f"\n成功插入 {inserted_count} 筆病例資料！")
         print(f"總計資料庫中有 {len(existing_agents) + inserted_count} 筆病例資料")
-        
+
     except Exception as e:
         print(f"插入資料時發生錯誤: {e}")
         db.rollback()
     finally:
         db.close()
+
 
 def show_all_agents():
     """顯示所有病例資料"""
@@ -343,15 +351,18 @@ def show_all_agents():
         agents = db.query(AgentSettings).all()
         print(f"\n=== 資料庫中的所有病例資料 (共 {len(agents)} 筆) ===")
         for agent in agents:
-            print(f"{agent.agent_code}: {agent.gender} {agent.age} - 疾病: {agent.disease} | 檢查類型: {agent.check_type} | 費用: {agent.payment_fee} | 瀉藥經驗: {agent.laxative_experience}")
+            print(
+                f"{agent.agent_code}: {agent.gender} {agent.age} - 疾病: {agent.disease} | 檢查類型: {agent.check_type} | 費用: {agent.payment_fee} | 瀉藥經驗: {agent.laxative_experience}"
+            )
     except Exception as e:
         print(f"查詢資料時發生錯誤: {e}")
     finally:
         db.close()
 
+
 if __name__ == "__main__":
     print("開始插入病例資料...")
     insert_agent_data()
-    
-    print("\n" + "="*50)
+
+    print("\n" + "=" * 50)
     show_all_agents()
