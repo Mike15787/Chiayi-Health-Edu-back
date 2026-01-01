@@ -753,7 +753,7 @@ class ColonoscopyBowkleanScoringLogic:
         5. 其他用藥 (specify_special_meds) -> 僅在 has_special_meds=True 時檢查
 
         評分邏輯：
-        - 3.0 分：所有「應說明項目」皆存在，且時間順序符合 1 -> 2 -> 3 -> 4 -> 5
+        - 4.0 分：所有「應說明項目」皆存在，且時間順序符合 1 -> 2 -> 3 -> 4 -> 5
         - 1.0 分：有缺漏項目，或順序顛倒
         """
 
@@ -825,7 +825,7 @@ class ColonoscopyBowkleanScoringLogic:
                 return 1.0
 
         logger.info(f"[{session_id}] 組織效率滿分: 順序正確且無缺漏")
-        return 3.0
+        return 4.0
 
     # --- 新增：最終分數計算邏輯 ---
     async def calculate_final_scores(
@@ -1094,7 +1094,7 @@ class ColonoscopyBowkleanScoringLogic:
         # 5. 組織效率 (Organization Efficiency) - 總分 9
         # ==========================================
 
-        # 5-1. 優先順序 (+3 or +1)
+        # 5-1. 優先順序 (+4 or +1)
         # 呼叫 LLM 判斷 (Diet -> Oral -> Powder -> NPO -> Others)
         val_sequence = self._check_organization_sequence_by_time(
             session_id, has_dulcolax, has_special_meds, db
