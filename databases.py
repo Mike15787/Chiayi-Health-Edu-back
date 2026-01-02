@@ -143,13 +143,6 @@ class SessionUserMap(Base):
     )
     score = Column(String(16), nullable=True, comment="對話評分(字串格式)")
     is_completed = Column(Boolean, default=False, comment="是否完成對話")
-    # --- [新增] 記錄該次對話使用的 LLM 設定 ---
-    llm_provider = Column(
-        String(32), nullable=True, comment="LLM供應商 (gemini/ollama)"
-    )
-    llm_model = Column(
-        String(64), nullable=True, comment="模型名稱 (如 gemini-1.5-flash)"
-    )
 
 
 class PasswordResetToken(Base):

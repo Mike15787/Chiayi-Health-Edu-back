@@ -1,26 +1,34 @@
-# modules/colonoscopy_bowelprep_A/summary_logic.py
+# modules/colonoscopy_bowklean/summary_logic.py
 import logging
 from typing import Dict, List
 import re
-from utils import generate_llm_response # 需要引入
+from utils import generate_llm_response  # 需要引入
 
 logger = logging.getLogger(__name__)
 
-async def generate_summary_prompt(agent_settings: Dict, chat_history_dicts: List[Dict]) -> str:
+
+async def generate_summary_prompt(
+    agent_settings: Dict, chat_history_dicts: List[Dict]
+) -> str:
     """
     生成總結的 LLM prompt，涵蓋 7 大評分面向。
     """
-    formatted_history = "\n".join([f"{'學員' if e['role'] == 'user' else '病患'}: {e['text']}" for e in chat_history_dicts])
-    
+    formatted_history = "\n".join(
+        [
+            f"{'學員' if e['role'] == 'user' else '病患'}: {e['text']}"
+            for e in chat_history_dicts
+        ]
+    )
+
     # 判斷 agent_settings 是字典還是 SQLAlchemy 物件，以正確的方式讀取 med_info
     med_info = "無"
     if agent_settings:
         if isinstance(agent_settings, dict):
             # 如果是字典 (Dict)
-            med_info = agent_settings.get('med_info', '無')
+            med_info = agent_settings.get("med_info", "無")
         else:
             # 如果是 SQLAlchemy 物件 (Object)
-            med_info = getattr(agent_settings, 'med_info', '無')
+            med_info = getattr(agent_settings, "med_info", "無")
 
     summary_prompt = f"""
     你是一位專業的臨床衛教指導老師。請根據以下病患背景和完整的對話紀錄，為學員的表現提供具體評語。
@@ -45,6 +53,7 @@ async def generate_summary_prompt(agent_settings: Dict, chat_history_dicts: List
     }}
     """
     return summary_prompt
+
 
 async def calculate_organization_efficiency_score_llm(full_history: str) -> float:
     """
@@ -72,21 +81,27 @@ async def calculate_organization_efficiency_score_llm(full_history: str) -> floa
     [你的評分]:
     請根據上述標準，給出一個 0 到 6 之間的整數分數。**請只輸出一個數字，不要有任何其他文字、符號或解釋。**
     """
-    
+
     logger.info(f"正在請求 gemma3:12b (或 gemma3:4b) 進行組織效率評分 (0-6)...")
     # 這裡可以根據 config.py 中的 PATIENT_AGENT_MODEL_NAME 或專用模型來決定
-    response_text = await generate_llm_response(prompt, "gemma3:12b") # 暫時使用 gemma3:12b
-    
+    response_text = await generate_llm_response(
+        prompt, "gemma3:12b"
+    )  # 暫時使用 gemma3:12b
+
     try:
-        match = re.search(r'\d+', response_text)
+        match = re.search(r"\d+", response_text)
         if match:
             score = int(match.group(0))
             clamped_score = max(0, min(6, score))
             logger.info(f"LLM 原始分數: {score}，校正後分數: {clamped_score}")
             return float(clamped_score)
         else:
-            logger.warning(f"無法從 LLM 回應中解析出組織效率分數: '{response_text}'。將預設為 0 分。")
+            logger.warning(
+                f"無法從 LLM 回應中解析出組織效率分數: '{response_text}'。將預設為 0 分。"
+            )
             return 0.0
     except Exception as e:
-        logger.error(f"解析組織效率分數時發生錯誤: {e}。回應: '{response_text}'。將預設為 0 分。")
+        logger.error(
+            f"解析組織效率分數時發生錯誤: {e}。回應: '{response_text}'。將預設為 0 分。"
+        )
         return 0.0
