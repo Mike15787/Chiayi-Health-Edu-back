@@ -169,24 +169,17 @@ class Scores(Base):
     session_id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     module_id = Column(
         String, nullable=False, default="default_module", comment="衛教模組ID"
-    )  # 新增
+    )
     total_score = Column(String, nullable=False, comment="總分")
     review_med_history_score = Column(String, nullable=False, comment="檢閱藥歷分數")
     medical_interview_score = Column(String, nullable=False, comment="醫療面談分數")
     counseling_edu_score = Column(String, nullable=False, comment="諮商衛教分數")
-    organization_efficiency_score = Column(
-        String, nullable=False, comment="組織效率分數"
-    )
+    organization_efficiency_score = Column(String, nullable=False, comment="組織效率分數")
     clinical_judgment_score = Column(String, nullable=False, comment="臨床判斷分數")
-    humanitarian_score = Column(
-        String, nullable=False, default="0", comment="人道專業分數"
-    )
-    organization_efficiency_score = Column(
-        String, nullable=False, default="0", comment="組織效率分數"
-    )
-    overall_clinical_skills_score = Column(
-        String, nullable=False, default="0", comment="整體臨床技能分數"
-    )
+    humanitarian_score = Column(String, nullable=False, comment="人道專業分數")
+    overall_clinical_skills_score = Column(String, nullable=False, comment="整體臨床技能分數")
+    # --- 新增這個欄位 ---
+    scoring_model = Column(String, nullable=True, comment="使用的評分LLM模型名稱")
 
 
 class Summary(Base):
