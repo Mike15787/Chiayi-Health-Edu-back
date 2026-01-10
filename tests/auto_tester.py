@@ -1,4 +1,8 @@
 # tests/auto_tester.py
+# 這份測試程式內 有主要三種測試模式
+# run_replay
+# run_all_replays
+# run_simulation
 import sys
 import os
 import asyncio
@@ -30,6 +34,9 @@ from databases import (
 from module_manager import ModuleManager
 from scoring_service_manager import ScoringServiceManager
 from tests.simulated_user import SimulatedUserAgent
+from tests.standard_script_generator import StandardScriptGenerator
+from utils import generate_llm_response
+
 
 # 設定 Log
 logging.basicConfig(
@@ -463,6 +470,225 @@ async def run_simulation(module_id: str, agent_code: str, max_turns: int = 15):
         db.close()
 
 
+async def run_golden_path_test(target_agent: str = None, iterations: int = 2):
+    """
+    黃金路徑測試：
+    針對所有 Agent (或指定 Agent)，使用 GoldenScriptGenerator 產生滿分劇本。
+    與系統進行對話並評分，驗證系統能否在標準輸入下給出高分。
+    """
+    logger.info("啟動黃金路徑回歸測試 (Golden Path Test)...")
+
+    db = SessionLocal()
+    try:
+        # 1. 取得要測試的 Agent 列表
+        agents_query = db.query(AgentSettings)
+        if target_agent:
+            agents_query = agents_query.filter(AgentSettings.agent_code == target_agent)
+
+        agents = agents_query.all()
+        if not agents:
+            logger.error("找不到任何 Agent 資料，請確認 agentset 是否已匯入。")
+            return
+
+        total_agents = len(agents)
+        print(f"共需測試 {total_agents} 位 Agent，每位執行 {iterations} 次。")
+
+        results = []
+
+        for idx, agent in enumerate(agents):
+            print(
+                f"\n[{idx+1}/{total_agents}] 正在測試 Agent: {agent.agent_code} ({agent.med_complexity})"
+            )
+
+            for i in range(iterations):
+                print(f"  > Run {i+1}...")
+                session_id = str(uuid.uuid4())
+                module_id = "colonoscopy_bowklean"  # 假設目前只測這個模組
+
+                # A. 建立 Session
+                new_session = SessionUserMap(
+                    session_id=session_id,
+                    username="GoldenTester",
+                    agent_code=agent.agent_code,
+                    module_id=module_id,
+                    created_at=datetime.now(),
+                )
+                db.add(new_session)
+                db.commit()
+
+                # B. 執行預計算 (為了取得正確日期)
+                precomputation_func = module_manager.get_precomputation_performer(
+                    module_id
+                )
+                await precomputation_func(session_id, agent.agent_code, db)
+
+                # C. 讀取預計算資料與設定
+                precomputed_obj = (
+                    db.query(PrecomputedSessionAnswer)
+                    .filter(PrecomputedSessionAnswer.session_id == session_id)
+                    .first()
+                )
+
+                # D. 生成標準範例流程
+                generator = StandardScriptGenerator(agent, precomputed_obj)
+                script_lines = generator.generate()
+
+                # E. 執行對話迴圈
+                history_text = ""
+                chat_history_list = []
+
+                # 模擬點擊 UI (檢閱藥歷) 以獲得分數
+                ui_interaction = SessionInteractionLog(
+                    session_id=session_id,
+                    module_id=module_id,
+                    viewed_alltimes_ci=True,
+                    viewed_chiachi_med=True,
+                    viewed_med_allergy=True,
+                    viewed_disease_diag=True,
+                    viewed_cloud_med=True,
+                )
+                db.add(ui_interaction)
+                db.commit()
+
+                for turn_idx, user_text in enumerate(script_lines):
+                    # 1. 儲存使用者(藥師)發言
+                    db.add(
+                        ChatLog(
+                            session_id=session_id,
+                            role="user",
+                            text=user_text,
+                            agent_code=agent.agent_code,
+                            module_id=module_id,
+                        )
+                    )
+                    db.commit()
+
+                    chat_history_list.append({"role": "user", "message": user_text})
+                    history_text += f"藥師：{user_text}\n"
+
+                    # 2. 觸發評分 (取最近5句)
+                    snippet = chat_history_list[-5:]
+                    await scoring_service_manager.process_user_inputs_for_scoring(
+                        session_id, module_id, snippet, db
+                    )
+
+                    # 3. 產生病患回應 (為了維持對話流，但不影響使用者劇本)
+                    # 這裡我們使用 Patient Agent，但因為是自動測試，我們不需要語音
+                    agent_settings_dict = {
+                        c.key: getattr(agent, c.key) for c in agent.__table__.columns
+                    }
+                    precomputed_dict = {
+                        c.key: getattr(precomputed_obj, c.key)
+                        for c in precomputed_obj.__table__.columns
+                    }
+
+                    patient_builder = module_manager.get_patient_agent_builder(
+                        module_id
+                    )
+                    patient_prompt = patient_builder(
+                        user_text, history_text, agent_settings_dict, precomputed_dict
+                    )
+
+                    # 為了速度，可以使用較快的模型，或者如果不在意回應內容，甚至可以 Mock 掉
+                    # 這裡還是呼叫 LLM 讓 log 看起來真實
+                    mod_config = module_manager.get_module_config(module_id)
+                    model_name = getattr(
+                        mod_config, "PATIENT_AGENT_MODEL_NAME", "gemma3:4b"
+                    )
+
+                    patient_response = await generate_llm_response(
+                        patient_prompt, model_name=model_name
+                    )
+                    if patient_response.startswith(
+                        "你："
+                    ) or patient_response.startswith("病患："):
+                        patient_response = patient_response.split("：", 1)[1]
+
+                    db.add(
+                        ChatLog(
+                            session_id=session_id,
+                            role="patient",
+                            text=patient_response,
+                            agent_code=agent.agent_code,
+                            module_id=module_id,
+                        )
+                    )
+                    db.commit()
+
+                    chat_history_list.append(
+                        {"role": "patient", "message": patient_response}
+                    )
+                    history_text += f"你(病患)：{patient_response}\n"
+
+                # F. 結算分數
+                final_scores = await scoring_service_manager.calculate_final_scores(
+                    session_id, module_id, db
+                )
+
+                # G. 儲存與顯示結果
+                total_score = float(final_scores.get("total_score", 0))
+                # 更新到 Session
+                session_update = (
+                    db.query(SessionUserMap)
+                    .filter(SessionUserMap.session_id == session_id)
+                    .first()
+                )
+                session_update.score = str(total_score)
+                session_update.is_completed = True
+
+                # 寫入 Scores 表
+                new_score_record = Scores(
+                    session_id=session_id,
+                    module_id=module_id,
+                    **{
+                        k: v
+                        for k, v in final_scores.items()
+                        if k in Scores.__table__.columns.keys()
+                    },
+                )
+                db.merge(new_score_record)
+                db.commit()
+
+                print(f"    -> 分數: {total_score} / 63.0 (Pass: {total_score > 55})")
+                results.append(
+                    {
+                        "agent": agent.agent_code,
+                        "run": i + 1,
+                        "score": total_score,
+                        "details": final_scores,
+                    }
+                )
+
+        # H. 輸出總報表
+        print("\n" + "=" * 50)
+        print("黃金路徑測試總結報告")
+        print("=" * 50)
+        print(f"{'Agent':<10} | {'Run':<5} | {'Score':<10} | {'Result'}")
+        print("-" * 40)
+
+        pass_count = 0
+        for r in results:
+            is_pass = "PASS" if r["score"] > 55 else "FAIL"  # 假設 55 分為通過門檻
+            if is_pass == "PASS":
+                pass_count += 1
+            print(f"{r['agent']:<10} | {r['run']:<5} | {r['score']:<10} | {is_pass}")
+
+            if r["score"] < 50:
+                # 若分數過低，印出詳細扣分項目以便除錯
+                print(f"    [Low Score Debug] {r['details']}")
+
+        print("-" * 40)
+        print(f"總執行次數: {len(results)}")
+        print(f"通過次數: {pass_count}")
+        print(f"通過率: {pass_count/len(results)*100:.1f}%")
+        print("=" * 50)
+
+    except Exception as e:
+        logger.error(f"黃金路徑測試發生錯誤: {e}", exc_info=True)
+    finally:
+        db.close()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AI Healthcare System Auto Tester")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -470,26 +696,21 @@ if __name__ == "__main__":
     # --- 修改這裡 ---
     # Replay Command
     replay_parser = subparsers.add_parser("replay", help="Replay existing session(s)")
-
     # 讓 session_id 變成選填 (nargs='?')，但如果沒加 --all 就必須填
-    replay_parser.add_argument(
-        "session_id", type=str, nargs="?", help="The specific Session ID to replay"
-    )
-
+    replay_parser.add_argument("session_id", type=str, nargs="?", help="The specific Session ID to replay")
     # 新增 --all 參數
-    replay_parser.add_argument(
-        "--all", action="store_true", help="Replay ALL original sessions in database"
-    )
+    replay_parser.add_argument("--all", action="store_true", help="Replay ALL original sessions in database")
 
     # Simulation Command
     sim_parser = subparsers.add_parser("sim", help="Simulate a new conversation")
-    sim_parser.add_argument(
-        "--agent", type=str, default="A1", help="Agent Code (e.g., A1, B2)"
-    )
-    sim_parser.add_argument(
-        "--module", type=str, default="colonoscopy_bowklean", help="Module ID"
-    )
+    sim_parser.add_argument("--agent", type=str, default="A1", help="Agent Code (e.g., A1, B2)")
+    sim_parser.add_argument("--module", type=str, default="colonoscopy_bowklean", help="Module ID")
     sim_parser.add_argument("--turns", type=int, default=15, help="Max turns")
+
+    # --- 新增 Golden Command ---
+    golden_parser = subparsers.add_parser("golden", help="Run Golden Path Regression Test")
+    golden_parser.add_argument("--agent", type=str, help="Specific agent code to test (optional)")
+    golden_parser.add_argument("--iter", type=int, default=2, help="Iterations per agent (default: 2)")
 
     args = parser.parse_args()
 
@@ -497,8 +718,16 @@ if __name__ == "__main__":
     init_database()
 
     if args.command == "replay":
-        asyncio.run(run_replay(args.session_id))
+        if args.all:
+            asyncio.run(run_all_replays())
+        else:
+            if not args.session_id:
+                print("Error: session_id is required unless --all is specified.")
+            else:
+                asyncio.run(run_replay(args.session_id))
     elif args.command == "sim":
         asyncio.run(run_simulation(args.module, args.agent, args.turns))
+    elif args.command == "golden":
+        asyncio.run(run_golden_path_test(args.agent, args.iter))
     else:
         parser.print_help()

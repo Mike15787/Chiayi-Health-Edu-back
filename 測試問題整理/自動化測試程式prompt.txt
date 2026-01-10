@@ -8,6 +8,10 @@
 
 以下是我的專案架構
 HEALTHCARE_BACKEND
+    - test
+        - auto_tester.py
+        - QA_script_content.py
+        - simulated_user.py
     - scenarios
         - colonoscopy_bowklean
             - config.py

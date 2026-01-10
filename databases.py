@@ -167,9 +167,7 @@ class PasswordResetToken(Base):
 class Scores(Base):
     __tablename__ = "sessionid_score"
     session_id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    module_id = Column(
-        String, nullable=False, default="default_module", comment="衛教模組ID"
-    )
+    module_id = Column(String, nullable=False, default="default_module", comment="衛教模組ID")
     total_score = Column(String, nullable=False, comment="總分")
     review_med_history_score = Column(String, nullable=False, comment="檢閱藥歷分數")
     medical_interview_score = Column(String, nullable=False, comment="醫療面談分數")
@@ -178,43 +176,29 @@ class Scores(Base):
     clinical_judgment_score = Column(String, nullable=False, comment="臨床判斷分數")
     humanitarian_score = Column(String, nullable=False, comment="人道專業分數")
     overall_clinical_skills_score = Column(String, nullable=False, comment="整體臨床技能分數")
-    # --- 新增這個欄位 ---
+    # --- 紀錄模型的欄位 ---
     scoring_model = Column(String, nullable=True, comment="使用的評分LLM模型名稱")
 
 
 class Summary(Base):
     __tablename__ = "sessionid_summary"
     session_id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    module_id = Column(
-        String, nullable=False, default="default_module", comment="衛教模組ID"
-    )  # 新增
+    module_id = Column(String, nullable=False, default="default_module", comment="衛教模組ID")
     total_summary = Column(String, nullable=False, comment="總結")
     review_med_history_summary = Column(String, nullable=False, comment="檢閱藥歷總結")
     medical_interview_summary = Column(String, nullable=False, comment="醫療面談總結")
     counseling_edu_summary = Column(String, nullable=False, comment="諮商衛教總結")
-    organization_efficiency_summary = Column(
-        String, nullable=False, comment="組織效率總結"
-    )
+    organization_efficiency_summary = Column(String, nullable=False, comment="組織效率總結")
     clinical_judgment_summary = Column(String, nullable=False, comment="臨床判斷總結")
-    # --- 新增欄位 ---
-    humanitarian_summary = Column(
-        String, nullable=False, default="無", comment="人道專業總結"
-    )
-    organization_efficiency_summary = Column(
-        String, nullable=False, default="無", comment="組織效率總結"
-    )
-    overall_clinical_skills_summary = Column(
-        String, nullable=False, default="無", comment="整體臨床技能總結"
-    )
-
+    humanitarian_summary = Column(String, nullable=False, default="無", comment="人道專業總結")
+    organization_efficiency_summary = Column(String, nullable=False, default="無", comment="組織效率總結")
+    overall_clinical_skills_summary = Column(String, nullable=False, default="無", comment="整體臨床技能總結")
 
 class ConversationSummary(Base):
     __tablename__ = "conversation_summary"
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_id = Column(String, nullable=False, index=True)  # 加上索引以加快查詢
-    module_id = Column(
-        String, nullable=False, default="default_module", comment="衛教模組ID"
-    )  # 新增
+    module_id = Column(String, nullable=False, default="default_module", comment="衛教模組ID")
     summary = Column(Text, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
@@ -223,54 +207,36 @@ class ConversationSummary(Base):
 class PrecomputedSessionAnswer(Base):
     __tablename__ = "precomputed_session_ans"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(
-        String, nullable=False, unique=True, index=True
-    )  # 加上索引以加快查詢
-    module_id = Column(
-        String, nullable=False, default="default_module", comment="衛教模組ID"
-    )  # 新增
+    session_id = Column(String, nullable=False, unique=True, index=True)  # 加上索引以加快查詢
+    module_id = Column(String, nullable=False, default="default_module", comment="衛教模組ID")
     exam_day = Column(String, nullable=False, comment="檢查日")
     prev_1d = Column(String, nullable=False, comment="檢查前一天")
     prev_2d = Column(String, nullable=False, comment="檢查前兩天")
     prev_3d = Column(String, nullable=False, comment="檢查前三天")  # ?月?號
-    second_dose_time = Column(
-        String, nullable=False, comment="第二包藥劑服用時間"
-    )  # 凌晨?點
+    second_dose_time = Column(String, nullable=False, comment="第二包藥劑服用時間")  # 凌晨?點
     npo_start_time = Column(String, nullable=False, comment="禁水時間")  # 上午?點
-    actual_check_type = Column(
-        String, nullable=False, comment="實際檢查類型(一般/無痛)"
-    )
+    actual_check_type = Column(String, nullable=False, comment="實際檢查類型(一般/無痛)")
 
 
 class ScoringPromptLog(Base):
     __tablename__ = "scoring_prompt_log"
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_id = Column(String, nullable=False, index=True)
-    module_id = Column(
-        String, nullable=False, default="default_module", comment="衛教模組ID"
-    )  # 新增
+    module_id = Column(String, nullable=False, default="default_module", comment="衛教模組ID")
     scoring_item_id = Column(String, nullable=False, index=True)
     prompt_text = Column(Text, nullable=False, comment="發送給 LLM 的完整 Prompt")
     llm_response = Column(Text, nullable=False, comment="LLM 返回的原始回應")
     final_score = Column(Integer, nullable=False, comment="解析後的最終分數 (0 或 1)")
-    created_at = Column(
-        DateTime, default=lambda: datetime.now(timezone.utc), comment="紀錄建立時間"
-    )
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), comment="紀錄建立時間")
 
 
 class ScoringAttributionLog(Base):
     __tablename__ = "scoring_attribution_log"
     id = Column(Integer, primary_key=True)
     session_id = Column(String, index=True)
-    chat_log_id = Column(
-        Integer, ForeignKey("chatlog.id")
-    )  # <-- 連結到觸發評分的那句話
-    module_id = Column(
-        String, nullable=False, default="default_module", comment="衛教模組ID"
-    )  # 新增
-    scoring_item_id = Column(
-        String, index=True
-    )  # <-- 連結到 scoring_criteria.json 的 id
+    chat_log_id = Column(Integer, ForeignKey("chatlog.id"))  # <-- 連結到觸發評分的那句話
+    module_id = Column(String, nullable=False, default="default_module", comment="衛教模組ID")
+    scoring_item_id = Column(String, index=True)  # <-- 連結到 scoring_criteria.json 的 id
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # 確保每個句子對應的評分項是唯一的
@@ -283,9 +249,7 @@ class SessionInteractionLog(Base):
     __tablename__ = "session_interaction_log"
 
     session_id = Column(String, primary_key=True, comment="對應的 Session ID")
-    module_id = Column(
-        String, nullable=False, default="default_module", comment="衛教模組ID"
-    )
+    module_id = Column(String, nullable=False, default="default_module", comment="衛教模組ID")
 
     # 記錄各個按鈕是否被點擊 (True/False)
     viewed_alltimes_ci = Column(Boolean, default=False, comment="是否檢閱歷次清腸資訊")
