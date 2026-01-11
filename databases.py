@@ -19,12 +19,16 @@ import os
 
 APP_ENV = os.getenv("APP_ENV", "dev")
 
-if APP_ENV == "test":
-    DB_FILENAME = "chatlog_test.db"
-    print(f"⚠️  [系統提示] 目前運作於【測試環境】，使用資料庫: {DB_FILENAME}")
+if APP_ENV == "auto":
+    DB_FILENAME = "auto_test.db"
+    print(f"🤖 [系統提示] 模式：【自動化測試 (Auto Test)】 | 資料庫: {DB_FILENAME}")
+elif APP_ENV == "human":
+    DB_FILENAME = "human_test.db"
+    print(f"👥 [系統提示] 模式：【真人測試 (Human/Ngrok)】 | 資料庫: {DB_FILENAME}")
 else:
+    # 預設 dev
     DB_FILENAME = "chatlog.db"
-    print(f"🔧 [系統提示] 目前運作於【開發環境】，使用資料庫: {DB_FILENAME}")
+    print(f"🔧 [系統提示] 模式：【開發環境 (Dev)】 | 資料庫: {DB_FILENAME}")
 
 # --- 資料庫設定 ---
 DATABASE_URL = f"sqlite:///{DB_FILENAME}"

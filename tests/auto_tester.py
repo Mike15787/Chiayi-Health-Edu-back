@@ -13,7 +13,7 @@ import uuid
 import re
 
 # 設定環境變數為 test
-os.environ["APP_ENV"] = "test"
+os.environ["APP_ENV"] = "auto"
 
 # 路徑設定
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -700,6 +700,13 @@ if __name__ == "__main__":
     replay_parser.add_argument("session_id", type=str, nargs="?", help="The specific Session ID to replay")
     # 新增 --all 參數
     replay_parser.add_argument("--all", action="store_true", help="Replay ALL original sessions in database")
+    # --- [新增] 指定模型參數 ---
+    replay_parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Override Scoring Model (e.g., gemma2:9b, gemini-1.5-flash)",
+    )
 
     # Simulation Command
     sim_parser = subparsers.add_parser("sim", help="Simulate a new conversation")
