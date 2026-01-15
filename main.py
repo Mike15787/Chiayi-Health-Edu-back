@@ -111,12 +111,10 @@ async def lifespan(app: FastAPI):
     # --- NEW: Initialize Module Manager and Scoring Service Manager ---
     logger.info("Initializing ModuleManager...")
     module_manager = ModuleManager()
-    logger.info("ModuleManager initialized.")
 
     logger.info("Initializing ScoringServiceManager...")
     scoring_service_manager = ScoringServiceManager()
     Scoring.scoring_service = scoring_service_manager  # 將實例賦值給 Scoring 模組的變數
-    logger.info("ScoringServiceManager initialized and linked to Scoring module.")
 
     # 清理舊的臨時檔案
     for temp_file in os.listdir(TEMP_DIR):
@@ -704,7 +702,7 @@ async def score_utterance_task(chat_log_id: int, session_id: str):
     await asyncio.sleep(2)  # 稍微延遲，避免阻塞主要回應
 
     logger.info(
-        f"[{session_id}] Starting background scoring task for chat_log_id: {chat_log_id}"
+        f"[{session_id}] 開始背景評分 for chat_log_id: {chat_log_id}"
     )
     db_task = SessionLocal()
     try:

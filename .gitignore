@@ -10,3 +10,5 @@ venv/
 .idea/
 *.wav
 /學弟/
+.xlsx
+*.db

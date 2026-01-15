@@ -5,7 +5,7 @@ from databases import AgentSettings, PrecomputedSessionAnswer
 from scenarios.colonoscopy_bowklean.config import MED_INSTRUCTIONS
 
 
-class StandardScriptGenerator:
+class GoldenScriptGenerator:
     """
     根據 Agent 設定與預計算數據，生成符合滿分標準的「藥師(使用者)」對話劇本。
     """

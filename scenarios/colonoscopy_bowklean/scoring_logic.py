@@ -39,9 +39,9 @@ logger = logging.getLogger(__name__)
 
 class ColonoscopyBowkleanScoringLogic:
     def __init__(self):
-        logger.info(f"Initializing Scoring Logic for module: {MODULE_ID}...")
+        logger.info(f"初始化 {MODULE_ID}  的scoring_criteria")
         self.criteria = self._load_criteria(SCORING_CRITERIA_FILE)
-        self.model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+        self.model = SentenceTransformer("BAAI/bge-m3")
         self.index, self.criteria_id_list = self._build_vector_index()
         logger.info(f"Scoring Logic for module: {MODULE_ID} initialized successfully.")
 
@@ -58,6 +58,7 @@ class ColonoscopyBowkleanScoringLogic:
         for criterion in self.criteria:
             item_description = criterion.get("item", "")
             examples = " ".join(criterion.get("example_answer", []))
+
             combined_text = f"{item_description} {examples}"
 
             documents_to_encode.append(combined_text)
@@ -68,8 +69,10 @@ class ColonoscopyBowkleanScoringLogic:
         )
         embeddings = self.model.encode(documents_to_encode, convert_to_tensor=False)
 
+        faiss.normalize_L2(embeddings)
+
         dimension = embeddings.shape[1]
-        index = faiss.IndexFlatL2(dimension)
+        index = faiss.IndexFlatIP(dimension)
         index.add(embeddings)
 
         logger.info(f"Vector index for module {MODULE_ID} built successfully.")
@@ -77,13 +80,31 @@ class ColonoscopyBowkleanScoringLogic:
 
     def find_relevant_criteria_ids(self, user_input: str, top_k: int = 5):
         """根據使用者輸入，找到最相關的評分項目ID"""
-        input_embedding = self.model.encode([user_input])
+        # 1. 編碼 Query
+        input_embedding = self.model.encode([user_input], convert_to_tensor=False)
+        # 2. Query 也要正規化
+        faiss.normalize_L2(input_embedding)
+        # 3. 搜尋 (現在算出的是相似度分數，範圍 -1 到 1，越接近 1 越相似)
         distances, I = self.index.search(input_embedding, top_k)
+        # 如果相似度低於 0.45，代表這句話跟評分標準沒什麼關係，就不要硬抓進來
+        # 這能大幅減少 LLM 的誤判
+        SIMILARITY_THRESHOLD = 0.45
 
         relevant_ids = set()
-        for idx in I[0]:
-            if idx != -1:
+        for j, idx in enumerate(I[0]):
+            score = distances[0][j]
+            if idx != -1 and score > SIMILARITY_THRESHOLD:
                 relevant_ids.add(self.criteria_id_list[idx])
+
+        # --- [修改 1] 強制觸發邏輯 ---
+        # 如果 "說明保可淨使用方式" (s1) 被觸發，則強制加入 "臨床判斷-服藥時間" (1 & 2)
+        # 因為這通常是在說明泡法的時候會一起講到時間，但向量可能只抓到泡法
+        if "med_mix_method_and_time.s1" in relevant_ids:
+            logger.info(
+                f"[{MODULE_ID}] 搜尋到 'med_mix_method_and_time.s1', 強制檢查clinical_med_timing"
+            )
+            relevant_ids.add("clinical_med_timing_1")
+            relevant_ids.add("clinical_med_timing_2")
 
         logger.info(
             f"Found relevant criteria IDs for module {MODULE_ID}: {list(relevant_ids)}"
@@ -110,7 +131,7 @@ class ColonoscopyBowkleanScoringLogic:
             db.add(log_entry)
 
             logger.info(
-                f"[{session_id}] Scored item '{item_id}' for module {MODULE_ID} with score {score}. Raw response: '{raw_response[:50]}...'"
+                f"評分項目 '{item_id}' for module {MODULE_ID} with score {score}. Raw response: '{raw_response[:50]}...'"
             )
             return score
         except Exception as e:
@@ -126,6 +147,7 @@ class ColonoscopyBowkleanScoringLogic:
         if not chat_snippet:
             return []
 
+        # 定義格式化函式
         def format_snippet(snippet: List[Dict]) -> str:
             formatted_lines = []
             for item in snippet:
@@ -133,19 +155,30 @@ class ColonoscopyBowkleanScoringLogic:
                 formatted_lines.append(f"{role}: {item['message']}")
             return "\n".join(formatted_lines)
 
-        formatted_conversation = format_snippet(chat_snippet)
+        # 1. 準備給 LLM 評分的完整上下文 (保持完整，讓 LLM 看得懂前因後果)
+        formatted_conversation_for_llm = format_snippet(chat_snippet)
+
+        # 2. [修改重點] 準備給向量搜尋用的文字 (只取最後 3 句)
+        # 這樣可以讓搜尋更聚焦在當下話題，減少舊話題的干擾
+        search_snippet = chat_snippet[-3:]
+        formatted_conversation_for_search = format_snippet(search_snippet)
 
         logger.info(
-            f"[{session_id}] Scoring conversation snippet for module {MODULE_ID}: {formatted_conversation[:150]}..."
+            f"[{session_id}] Vector Search Query (Last 3 lines): {formatted_conversation_for_search.replace(chr(10), ' | ')}"
         )
 
-        relevant_ids = self.find_relevant_criteria_ids(formatted_conversation, top_k=5)
+        # 3. 執行搜尋 (使用縮減後的文字搜尋，保持 top_k=5)
+        relevant_ids = self.find_relevant_criteria_ids(
+            formatted_conversation_for_search, top_k=5
+        )
+
         if not relevant_ids:
             logger.info(
                 f"[{session_id}] No relevant scoring criteria found for module {MODULE_ID}."
             )
             return []
 
+        # 4. 準備資料庫查詢已通過項目
         already_passed_stmt = db.query(AnswerLog.scoring_item_id).filter(
             AnswerLog.session_id == session_id, AnswerLog.score == 1
         )
@@ -159,19 +192,23 @@ class ColonoscopyBowkleanScoringLogic:
 
         newly_passed_ids = []
 
+        # 5. 逐一評分
         for item_id in relevant_ids:
             if item_id in passed_ids:
-                logger.info(
-                    f"[{session_id}] Skipping already passed item: {item_id} for module {MODULE_ID}."
-                )
+                # 這裡稍微降低 log 等級或略過 log，避免洗版
                 continue
 
             criterion = next(
                 (item for item in self.criteria if item["id"] == item_id), None
             )
             if criterion:
+                # 注意：這裡傳給 LLM 的是「完整的上下文 (formatted_conversation_for_llm)」
                 score = await self.score_item(
-                    session_id, formatted_conversation, criterion, db, precomputed_data
+                    session_id,
+                    formatted_conversation_for_llm,
+                    criterion,
+                    db,
+                    precomputed_data,
                 )
 
                 if score == 1:
@@ -255,6 +292,10 @@ class ColonoscopyBowkleanScoringLogic:
             elif item_type == "RAG_explain_npo":
                 # 這是單純檢查「有無提到禁水」，不同於 RAG_confirm_npo (檢查時間點準確性)
                 score = await self._check_explain_npo_mention(
+                    session_id, conversation_context, criterion, db
+                )
+            elif item_type == "RAG_guidance3_check_type":
+                score = await self._check_proper_guidance_s3(
                     session_id, conversation_context, criterion, db
                 )
             else:  # 對於未定義的類型，使用基礎 RAG 邏輯
@@ -347,6 +388,10 @@ class ColonoscopyBowkleanScoringLogic:
             )
             return 0
 
+        # --- 加入 Debug Log ---
+        logger.info(
+            f"[{session_id}] Checking Timing: {criterion['id']}. Truth: Prev1d={precomputed_data.prev_1d}, ExamDay={precomputed_data.exam_day}, 2ndDose={precomputed_data.second_dose_time}"
+        )
         prompt = ""
         if criterion["id"] == "clinical_med_timing_1":
             prompt = f"""
@@ -388,13 +433,26 @@ class ColonoscopyBowkleanScoringLogic:
         # 根據實際檢查類型判斷禁水前應停止多久
         npo_hours_before = 3 if precomputed_data.actual_check_type == "無痛" else 2
 
+        # 為了避免 LLM 被 "上午" vs "早上" 或 "7:00" vs "7點" 搞混，我們強調語意
         prompt = f"""
         你是一個資深護理師，請判斷學員的衛教內容是否正確。
-        [情境] 病人正確的禁水開始時間是 {precomputed_data.npo_start_time} (在 {precomputed_data.actual_check_type} 檢查前 {npo_hours_before} 小時)。
-        [學員回答]: {conversation_context}
         
-        學員是否有清楚告知病人，從「{precomputed_data.npo_start_time}」這個時間點開始就完全不能再喝任何東西（包含水）？
-        如果學員清楚說明了這個具體的時間點和禁水要求，只輸出 "1"。否則輸出 "0"。
+        [標準答案]: 
+        病人正確的禁水開始時間是 **{precomputed_data.npo_start_time}**。
+        (這是根據檢查時間往前推算 {npo_hours_before} 小時)。
+
+        [學員回答]: 
+        {conversation_context}
+        
+        [評分任務]:
+        學員是否有告知病人從 **{precomputed_data.npo_start_time}** (或意思相同的時間點) 開始禁水？
+        
+        [注意]:
+        1. 格式不同是可以的 (例如 "早上7點" 等於 "上午07:00")。
+        2. 如果學員說 "檢查前X小時"，且換算出來的時間正確，也算得分。
+        3. 重點是「時間點」要講對，且要提到「不能喝水/禁水」。
+
+        如果正確，只輸出 "1"。否則輸出 "0"。
         """
         score = await self._call_llm_and_log(
             session_id, "clinical_npo_timing", prompt, SCORING_MODEL_NAME, db
@@ -529,13 +587,24 @@ class ColonoscopyBowkleanScoringLogic:
             return 0
         prompt = f"""
         你是一個資深護理師，請判斷學員的衛教內容是否正確。
-        [情境] 檢查日期是 {precomputed_data.exam_day}。
-        - 檢查前三天 ({precomputed_data.prev_3d}) 應該要低渣飲食。
-        - 檢查前兩天 ({precomputed_data.prev_2d}) 應該要低渣飲食。
-        - 檢查前一天 ({precomputed_data.prev_1d}) 應該要無渣流質飲食。
-        [學員回答]: {conversation_context}
+
+        [正確的飲食時程表]:
+        - 檢查前三天 ({precomputed_data.prev_3d})：低渣飲食
+        - 檢查前兩天 ({precomputed_data.prev_2d})：低渣飲食
+        - 檢查前一天 ({precomputed_data.prev_1d})：無渣流質飲食 (如運動飲料、清湯)
+
+        [學員回答]: 
+        {conversation_context}
         
-        學員是否給出了正確的飲食衛教？如果正確，只輸出 "1"。如果不正確，只輸出 "0"。
+        [評分標準]:
+        請判斷學員是否正確說明了上述兩個階段的飲食原則（低渣 vs 無渣流質）。
+        
+        [寬容度說明]:
+        1. 學員可以使用「具體日期」(如{precomputed_data.prev_3d})。
+        2. 學員也可以使用「相對日期」(如 "檢查前三天"、"前兩天"、"明天/後天")。
+        3. 只要學員講出的邏輯符合上述時程表，就請給分。
+
+        如果飲食觀念與時程正確，只輸出 "1"。如果不正確，只輸出 "0"。
         """
         return await self._call_llm_and_log(
             session_id, "diet_basic", prompt, SCORING_MODEL_NAME, db
@@ -546,11 +615,11 @@ class ColonoscopyBowkleanScoringLogic:
     ) -> int:
         """檢查學員是否正確說明了特定一包清腸劑的泡製方法。"""
 
-        # 從 criterion ID 判斷是第一包還是第二包
-        dose_number_text = "第一包" if "first" in criterion["id"] else "第二包"
+        # [修正] 不再單純依賴 ID 判斷是第幾包，因為 s1 代表通用的泡法說明
+        # 我們改為讓 LLM 判斷「是否有說明泡法（無論第一包或第二包）」
 
         prompt = f"""
-        你是一位嚴謹的臨床藥師，請判斷學員是否正確地說明了「{dose_number_text}」清腸劑的泡製與服用方式。
+        你是一位嚴謹的臨床藥師，請判斷學員是否正確地說明了清腸劑(保可淨)的泡製與服用方式。
 
         [正確的泡製方法參考]:
         將一包「保可淨」倒入裝有150c.c.常溫水的杯中，攪拌至完全溶解後立即喝完。
@@ -561,11 +630,11 @@ class ColonoscopyBowkleanScoringLogic:
         ---
 
         [你的判斷任務]:
-        請判斷學員在對話中，是否有針對「{dose_number_text}」藥劑，清楚說明了類似上述的泡製方法？
+        請判斷學員在對話中，是否有針對藥劑(第一包或第二包皆可)，清楚說明了類似上述的泡製方法？
         你需要檢查的關鍵點包含：「150c.c.的水量」、「攪拌/溶解」、「立即喝完」。
         只要語意正確即可，不需逐字比對。
 
-        - 如果學員對「{dose_number_text}」的說明包含上述所有關鍵點，請只輸出 "1"。
+        - 如果學員有說明上述關鍵泡製步驟，請只輸出 "1"。
         - 如果說明不完整、不正確或完全沒有提到，請只輸出 "0"。
 
         [你的判斷 (只輸出 1 或 0)]:
@@ -600,20 +669,22 @@ class ColonoscopyBowkleanScoringLogic:
         terms_str = "、".join(exclude_terms)
 
         prompt = f"""
-        你是一個嚴格的醫學溝通評分員。你的任務是檢查學員在對話中是否使用了病人聽不懂的「專業術語」。
-        
-        [禁止使用的專業術語列表]: {terms_str}
-        
-        [學員與病人的對話紀錄]:
+        你是一個嚴格的醫學溝通評分員。你的任務是檢查學員(藥師/護理師)在對話中是否使用了病人聽不懂的「艱澀專業術語」。
+
+        [對話紀錄]:
         ---
         {conversation_context}
         ---
         
-        [評分標準]:
-        1. 如果學員在對話中**直接使用**了上述禁止列表中的任何一個詞彙（例如直接說「你有高血壓嗎」而沒有用通俗說法），請輸出 "0"。
-        2. 如果學員完全沒有使用上述術語，或者使用了通俗的說法（例如將「高血壓」說成「血壓比較高」、「糖尿病」說成「血糖的問題」），請輸出 "1"。
+        [評分標準 - 請仔細閱讀]:
+        1. ✅ **允許使用**：常見的疾病名稱是允許的，例如：「高血壓」、「糖尿病」、「中風」、「胃潰瘍」、「抗凝血劑」。這些在台灣是普及的用語，**不**算專業術語。
+        2. ❌ **禁止使用**：艱澀的生理學或藥理學名詞，例如：「腸道蠕動」、「滲透壓」、「電解質不平衡」、「代謝性酸中毒」、「交互作用機制」。
         
-        [你的判斷 (只輸出 1 或 0)]:
+        [你的判斷]:
+        - 如果學員使用的詞彙都是病人聽得懂的（包含高血壓、糖尿病等），請輸出 "1"。
+        - 如果學員使用了艱澀名詞且**沒有**立刻用白話文解釋（例如說了「增加滲透壓」卻沒解釋這是什麼），請輸出 "0"。
+
+        [請只輸出 1 或 0]:
         """
         return await self._call_llm_and_log(
             session_id, criterion["id"], prompt, SCORING_MODEL_NAME, db
@@ -715,6 +786,36 @@ class ColonoscopyBowkleanScoringLogic:
             session_id, criterion["id"], prompt, SCORING_MODEL_NAME, db
         )
 
+    async def _check_proper_guidance_s3(
+        self, session_id: str, conversation_context: str, criterion: dict, db: Session
+    ) -> int:
+        """
+        [Type: RAG_guidance3_check_type]
+        檢查是否進行引導對話。
+        只要學員有試圖詢問或確認檢查類型 (直接問、問費用、問麻醉)，都算得分。
+        """
+        prompt = f"""
+        你是一個資深護理師。評分項目是：「當病人不清楚或需要確認時，引導病人判斷是大腸鏡檢查是『一般』還是『無痛』」。
+
+        [學員與病人的對話]:
+        ---
+        {conversation_context}
+        ---
+
+        [判斷標準]:
+        請檢查學員是否說了類似以下任何一句話：
+        1. "請問您是做一般的還是無痛的？" (直接詢問)
+        2. "請問您繳費大約多少錢？是800還是4500？" (透過費用引導)
+        3. "需要麻醉嗎？" (透過麻醉引導)
+
+        只要學員有**試圖詢問或確認檢查類型**，不管是用問的、用猜的、還是用費用判斷，都請判定為合格。
+        
+        符合輸出 "1"，不符合輸出 "0"。
+        """
+        return await self._call_llm_and_log(
+            session_id, criterion["id"], prompt, SCORING_MODEL_NAME, db
+        )
+
     async def _check_explain_npo_mention(
         self, session_id: str, conversation_context: str, criterion: dict, db: Session
     ) -> int:
@@ -739,6 +840,87 @@ class ColonoscopyBowkleanScoringLogic:
             session_id, criterion["id"], prompt, SCORING_MODEL_NAME, db
         )
 
+    async def _check_satisfy_info_global(
+        self, session_id: str, chat_logs: List[ChatLog], db: Session
+    ) -> int:
+        """
+        [補考機制]
+        在對話結束後，掃描學員整場的所有發言，檢查是否有詢問「有沒有問題」或「是否清楚」。
+        """
+        # 1. 撈出所有學員(User)講過的話
+        user_messages = [log.text for log in chat_logs if log.role == "user"]
+
+        if not user_messages:
+            return 0
+
+        # 2. 關鍵字快篩 (節省 LLM 資源)
+        # 如果整場對話連這些詞都沒出現過，直接判 0 分
+        keywords = ["問題", "清楚", "了解", "懂", "疑問", "ok", "OK", "可以嗎"]
+        full_text_combined = " ".join(user_messages)
+
+        if not any(k in full_text_combined for k in keywords):
+            logger.info(
+                f"[{session_id}] Global check for satisfy_info: No keywords found. Score 0."
+            )
+            return 0
+
+        # 3. 組合 Prompt
+        # 我們把學員的所有發言列出來，請 LLM 判斷
+        formatted_messages = "\n".join([f"- {msg}" for msg in user_messages])
+
+        prompt = f"""
+        你是一個嚴格的護理溝通評分員。以下是學員在整場衛教過程中說過的所有話。
+        請檢查學員是否曾經**主動詢問**病人「有沒有問題」、「是否聽得懂」或「哪裡不清楚」。
+
+        [學員的所有發言]:
+        {formatted_messages}
+
+        [判斷標準]:
+        只要學員有說出類似以下的句子 (語意相符即可)，請輸出 "1"：
+        - "這樣有清楚嗎？"
+        - "有沒有什麼問題想問？"
+        - "剛剛講的可以嗎？"
+        - "哪邊不清楚嗎？"
+
+        如果完全沒有這類詢問，輸出 "0"。
+        
+        [你的判斷 (1 或 0)]:
+        """
+
+        # 呼叫 LLM (使用較強的模型以確保準確度)
+        score = await self._call_llm_and_log(
+            session_id,
+            "satisfy_patient_infomation_global",
+            prompt,
+            SCORING_MODEL_NAME,
+            db,
+        )
+
+        if score == 1:
+            logger.info(
+                f"[{session_id}] Global check for satisfy_info PASSED! Updating record."
+            )
+
+            # 重要：補寫入資料庫，這樣 /details API 才會顯示通過
+            try:
+                stmt = sqlite_insert(AnswerLog).values(
+                    session_id=session_id,
+                    module_id=MODULE_ID,
+                    scoring_item_id="satisfy_patient_infomation",  # 使用原始 ID
+                    score=1,
+                    created_at=datetime.now(),
+                )
+                on_conflict_stmt = stmt.on_conflict_do_update(
+                    index_elements=["session_id", "scoring_item_id"], set_=dict(score=1)
+                )
+                db.execute(on_conflict_stmt)
+                db.commit()
+            except Exception as e:
+                logger.error(f"Failed to update AnswerLog in global check: {e}")
+
+        return score
+
+    ''' 舊的 透過時間戳記來評分組織效率 不太穩定
     def _check_organization_sequence_by_time(
         self, session_id: str, has_dulcolax: bool, has_special_meds: bool, db: Session
     ) -> float:
@@ -825,7 +1007,82 @@ class ColonoscopyBowkleanScoringLogic:
                 return 1.0
 
         logger.info(f"[{session_id}] 組織效率滿分: 順序正確且無缺漏")
-        return 4.0
+        return 4.0'''
+
+    async def _check_organization_sequence_by_llm(
+        self, session_id: str, has_dulcolax: bool, has_special_meds: bool, db: Session
+    ) -> float:
+        """
+        [組織效率] 改用 LLM 閱讀整場對話，判斷衛教順序是否符合邏輯。
+        解決時間戳記在自動測試中過於接近導致誤判的問題。
+        """
+
+        # 1. 撈取整場對話紀錄 (按照時間排序)
+        chat_logs = (
+            db.query(ChatLog)
+            .filter(ChatLog.session_id == session_id)
+            .order_by(ChatLog.time.asc())
+            .all()
+        )
+
+        if not chat_logs:
+            return 1.0
+
+        # 轉成純文字對話
+        full_dialogue = "\n".join([f"{log.role}: {log.text}" for log in chat_logs])
+
+        # 2. 動態建構標準 SOP 順序
+        steps = ["1. 飲食衛教 (低渣/無渣)"]
+
+        if has_dulcolax:
+            steps.append("2. 口服瀉藥錠劑 (樂可舒) [通常在檢查前一天中午]")
+            steps.append("3. 清腸粉劑 (保可淨) [通常在檢查前一天傍晚/當天早上]")
+        else:
+            steps.append("2. 清腸粉劑 (保可淨) [通常在檢查前一天傍晚/當天早上]")
+
+        steps.append("最後. 禁水時間 (NPO)")
+
+        if has_special_meds:
+            steps.append(
+                "補充. 特殊用藥停藥/續用 (通常在講完禁水後補充，或穿插在藥物段落)"
+            )
+
+        sop_text = "\n".join(steps)
+
+        # 3. 撰寫 Prompt
+        prompt = f"""
+        你是一個嚴格的衛教評分員。請檢視以下對話，判斷學員（user）的衛教順序是否符合標準 SOP。
+
+        [標準衛教順序 SOP]:
+        {sop_text}
+
+        [對話紀錄]:
+        {full_dialogue}
+
+        [評分標準]:
+        請判斷學員的解說順序是否大致符合上述邏輯：
+        - 原則上應先講「飲食」，再講「吃瀉藥/喝藥水」，最後講「禁水」。
+        - 如果學員順序正確 (例如：先教怎麼吃低渣，才教怎麼泡藥)，請給 4 分。
+        - 如果順序嚴重顛倒 (例如：先講禁水，才突然想到要講低渣飲食；或是先教喝藥，最後才補講飲食)，請給 1 分。
+        - 只要邏輯通順，細節稍微穿插沒關係，重點是「飲食 -> 用藥 -> 禁水」的大架構要對。
+
+        [你的判斷]:
+        請只輸出一個數字： "4" (順序正確) 或 "1" (順序混亂)。
+        """
+
+        # 4. 呼叫 LLM
+        # 使用 SCORING_MODEL_NAME (建議 gemma3:12b)
+        response = await generate_llm_response(prompt, SCORING_MODEL_NAME)
+
+        # 5. 解析結果
+        if "4" in response:
+            logger.info(f"[{session_id}] 組織效率(LLM判定): 順序正確 (4分)")
+            return 4.0
+        else:
+            logger.info(
+                f"[{session_id}] 組織效率(LLM判定): 順序混亂或嚴重錯誤 (1分). Response: {response}"
+            )
+            return 1.0
 
     # --- 新增：最終分數計算邏輯 ---
     async def calculate_final_scores(
@@ -882,6 +1139,25 @@ class ColonoscopyBowkleanScoringLogic:
             .all()
         )
         passed_item_ids = {item.scoring_item_id for item in passed_items_query}
+
+        # =========================================================
+        # [新增] 針對「需求滿足」的補考機制 (Last Resort Check)
+        # =========================================================
+        if "satisfy_patient_infomation" not in passed_item_ids:
+            logger.info(
+                f"[{session_id}] 'satisfy_patient_infomation' not passed yet. Running global check..."
+            )
+
+            # 呼叫補考函式
+            global_score = await self._check_satisfy_info_global(
+                session_id, chat_logs, db
+            )
+
+            if global_score == 1:
+                passed_item_ids.add("satisfy_patient_infomation")
+                logger.info(
+                    f"[{session_id}] Global check passed. Added to passed items."
+                )
 
         # 2. 獲取 UI 互動產生的檢閱藥歷分數 (從 Scores 表讀取暫存值)
         #    注意：main.py 在 end_chat 時會先存一次 UI 產生的 review_med_history_score
@@ -996,7 +1272,42 @@ class ColonoscopyBowkleanScoringLogic:
         ) * 0.5
 
         # 3-2. 註記時間 (+0.5)
-        val_note_time = is_passed("note_have_med_time") * 0.5
+        # ---------------------------------------------------------
+        pass_note_phrase = is_passed("note_have_med_time")
+        pass_time1 = is_passed("clinical_med_timing_1")
+        pass_time2 = is_passed("clinical_med_timing_2")
+        pass_s2 = is_passed("med_mix_method_and_time.s2")
+
+        # 基礎條件: 兩個時間點判斷正確
+        logic_met = pass_time1 and pass_time2
+
+        # 額外條件: 如果有樂可舒，樂可舒的說明也必須正確
+        if has_dulcolax:
+            logic_met = logic_met and pass_s2
+
+        # --- [DEBUG START] 輸出詳細判定狀態 ---
+        print(f"\n🐛 [DEBUG: 註記時間 3-2] Session: {session_id}")
+        print(f"   • RAG (有無說'幫你寫'): {pass_note_phrase} (1=Pass, 0=Fail)")
+        print(f"   • Time1 (第一包時間): {pass_time1}")
+        print(f"   • Time2 (第二包時間): {pass_time2}")
+        print(f"   • Has Dulcolax? {has_dulcolax}")
+        if has_dulcolax:
+            print(f"   • S2 (樂可舒時間): {pass_s2}")
+
+        print(f"   => Logic Met (時間全對): {logic_met}")
+
+        # 顯示您目前的判定邏輯結果 (OR)
+        final_result = pass_note_phrase or logic_met
+        print(
+            f"   => 最終給分 (RAG or Logic): {'✅ 給分' if final_result else '❌ 不給分'}"
+        )
+        print("-" * 40)
+        # --- [DEBUG END] ---
+
+        if final_result:
+            val_note_time = 0.5
+        else:
+            val_note_time = 0.0
 
         # 3-3. 藥物使用時機及方式 (+2) -> 組合 E vs F
         # 組合 E (Only Bowklean): med_mix_method_and_time.s1
@@ -1096,7 +1407,7 @@ class ColonoscopyBowkleanScoringLogic:
 
         # 5-1. 優先順序 (+4 or +1)
         # 呼叫 LLM 判斷 (Diet -> Oral -> Powder -> NPO -> Others)
-        val_sequence = self._check_organization_sequence_by_time(
+        val_sequence = await self._check_organization_sequence_by_llm(
             session_id, has_dulcolax, has_special_meds, db
         )
 
@@ -1523,7 +1834,7 @@ class ColonoscopyBowkleanScoringLogic:
 
         # --- 3. 組織效率 ---
         # 優先順序
-        val_sequence = self._check_organization_sequence_by_time(
+        val_sequence = await self._check_organization_sequence_by_llm(
             session_id, has_dulcolax, has_special_meds, db
         )
         grouped_details["組織效率"]["items"].append(
@@ -1533,7 +1844,7 @@ class ColonoscopyBowkleanScoringLogic:
                 "description": "飲食 -> 口服藥(若有) -> 清腸粉劑 -> 禁水 -> 其他用藥",
                 "weight": 3.0,
                 "user_score": val_sequence,
-                "scoring_type": "Timestamp Logic",
+                "scoring_type": "LLM Logic",
                 "relevant_dialogues": [],
             }
         )

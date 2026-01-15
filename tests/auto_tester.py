@@ -12,13 +12,25 @@ from datetime import datetime
 import uuid
 import re
 
-# 設定環境變數為 test
-os.environ["APP_ENV"] = "auto"
+target_env = "auto"  # 預設自動測試環境
+
+# 簡易解析 sys.argv，因為 argparse 在後面才定義，但我們現在就需要知道 env
+if "--env" in sys.argv:
+    try:
+        env_index = sys.argv.index("--env") + 1
+        if env_index < len(sys.argv):
+            target_env = sys.argv[env_index]
+    except ValueError:
+        pass
+
+os.environ["APP_ENV"] = target_env
+print(f"🚀 [AutoTester] 正在啟動測試，目標環境: 【{target_env.upper()}】")
 
 # 路徑設定
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 導入專案模組
+from agentset import insert_agent_data
 from databases import (
     init_database,
     SessionLocal,
@@ -30,11 +42,12 @@ from databases import (
     Scores,
     Summary,
     SessionInteractionLog,
+    ScoringPromptLog,
 )
 from module_manager import ModuleManager
 from scoring_service_manager import ScoringServiceManager
 from tests.simulated_user import SimulatedUserAgent
-from tests.standard_script_generator import StandardScriptGenerator
+from tests.standard_script_generator import GoldenScriptGenerator
 from utils import generate_llm_response
 
 
@@ -470,7 +483,7 @@ async def run_simulation(module_id: str, agent_code: str, max_turns: int = 15):
         db.close()
 
 
-async def run_golden_path_test(target_agent: str = None, iterations: int = 2):
+async def run_golden_path_test(target_agent: str = None, iterations: int = 1):
     """
     黃金路徑測試：
     針對所有 Agent (或指定 Agent)，使用 GoldenScriptGenerator 產生滿分劇本。
@@ -530,7 +543,7 @@ async def run_golden_path_test(target_agent: str = None, iterations: int = 2):
                 )
 
                 # D. 生成標準範例流程
-                generator = StandardScriptGenerator(agent, precomputed_obj)
+                generator = GoldenScriptGenerator(agent, precomputed_obj)
                 script_lines = generator.generate()
 
                 # E. 執行對話迴圈
@@ -689,52 +702,354 @@ async def run_golden_path_test(target_agent: str = None, iterations: int = 2):
         db.close()
 
 
+# -------------------------------------------------------------------------
+# 新增：失敗原因分析函數
+# -------------------------------------------------------------------------
+async def analyze_scoring_failure(session_id: str, module_id: str, db):
+    """
+    針對該 Session 中「未通過」的項目，調閱 ScoringPromptLog，
+    並請 LLM 分析為什麼原本的評分模型給了 0 分。
+    """
+    print(f"\n🔍 [分析模式] 正在分析 Session {session_id} 的扣分項目...")
+
+    # 1. 找出所有應該得分但實際未得分的項目
+    #    (這裡假設 Golden Script 應該要全拿滿分，所以只要沒在 AnswerLog(score=1) 裡的都算失敗)
+
+    # 先取得所有已得分項目 ID
+    passed_items = (
+        db.query(AnswerLog.scoring_item_id)
+        .filter(AnswerLog.session_id == session_id, AnswerLog.score == 1)
+        .all()
+    )
+    passed_ids = {row[0] for row in passed_items}
+
+    # 撈取該 Session 所有被評分過的紀錄 (ScoringPromptLog)
+    # 我們只取每個 item_id 的「最後一次」評分紀錄來分析
+    all_logs = (
+        db.query(ScoringPromptLog)
+        .filter(ScoringPromptLog.session_id == session_id)
+        .order_by(ScoringPromptLog.id.desc())
+        .all()
+    )
+
+    analyzed_ids = set()
+    failure_reports = []
+
+    for log in all_logs:
+        item_id = log.scoring_item_id
+
+        # 如果已經分析過，或是該項目其實最後有通過，就跳過
+        if item_id in analyzed_ids or item_id in passed_ids:
+            continue
+
+        analyzed_ids.add(item_id)
+
+        # 開始分析這個失敗項目
+        print(f"   ❓ 正在分析失敗項目: {item_id}")
+
+        # 構建給「分析師 LLM」的 Prompt
+        debugger_prompt = f"""
+        你是一個資深的 AI 評測專家。系統剛剛對一段醫療衛教對話進行了評分，但判定結果為「不合格 (0分)」。
+        由於這是標準答案測試 (Golden Path)，理論上應該要得分。
+        請你分析「原始評分 Prompt」以及「對話內容」，找出為什麼模型判定為 0 分的原因。
+
+        [原始評分項目 ID]: {item_id}
+        
+        [當時送給模型的 Prompt (包含對話紀錄與評分標準)]:
+        ---
+        {log.prompt_text}
+        ---
+
+        [模型當時的原始回應]:
+        {log.llm_response}
+
+        [你的任務]:
+        1. 判斷對話內容是否其實已經符合評分標準？
+        2. 如果符合，請說明為什麼模型沒抓到？(例如：關鍵字不同、Prompt 指令太複雜、截斷長度問題)
+        3. 如果不符合，請指出標準劇本漏了什麼？
+        4. 請用繁體中文簡短回答。
+        """
+
+        # 使用較強的模型進行分析 (建議用 12b，如果 config 允許)
+        analysis_result = await generate_llm_response(
+            debugger_prompt, model_name="gemma3:12b"
+        )
+
+        failure_reports.append(
+            {
+                "item_id": item_id,
+                "original_response": log.llm_response,
+                "analysis": analysis_result,
+            }
+        )
+
+    return failure_reports
+
+
+# -------------------------------------------------------------------------
+# 新增：Golden Path 除錯模式主函數
+# -------------------------------------------------------------------------
+async def run_golden_path_debug_mode():
+    """
+    完整測試 Agent A1~C5 各一次。
+    結束後針對「未得分項目」進行 LLM 歸因分析。
+    """
+    logger.info("🚀 啟動 Golden Path 全面除錯模式 (Debug Mode)...")
+
+    db = SessionLocal()
+    try:
+        # 1. 取得所有 Agent
+        # agents = db.query(AgentSettings).all()
+
+        # 指定只測試 B1 ~ B5
+        target_codes = ["B1", "B2", "B3", "B4", "B5"]
+        agents = (
+            db.query(AgentSettings)
+            .filter(AgentSettings.agent_code.in_(target_codes))
+            .all()
+        )
+
+        # 排序一下比較好閱讀 (A1, A2... B1...)
+        agents.sort(key=lambda x: x.agent_code)
+
+        if not agents:
+            logger.error("❌ 無 Agent 資料，請先匯入。")
+            return
+
+        total_agents = len(agents)
+        print(f"📋 共需測試 {total_agents} 位 Agent (A1~C5)，每位執行 1 次。")
+
+        for idx, agent in enumerate(agents):
+            print(f"\n{'='*60}")
+            print(
+                f"[{idx+1}/{total_agents}] 正在測試 Agent: {agent.agent_code} (難度: {agent.med_complexity})"
+            )
+            print(f"{'='*60}")
+
+            session_id = str(uuid.uuid4())
+            module_id = "colonoscopy_bowklean"
+
+            # A. 建立 Session
+            new_session = SessionUserMap(
+                session_id=session_id,
+                username="DebugTester",
+                agent_code=agent.agent_code,
+                module_id=module_id,
+                created_at=datetime.now(),
+            )
+            db.add(new_session)
+            db.commit()
+
+            # B. 預計算
+            precomputation_func = module_manager.get_precomputation_performer(module_id)
+            await precomputation_func(session_id, agent.agent_code, db)
+
+            # C. 產生劇本
+            precomputed_obj = (
+                db.query(PrecomputedSessionAnswer)
+                .filter(PrecomputedSessionAnswer.session_id == session_id)
+                .first()
+            )
+            generator = GoldenScriptGenerator(agent, precomputed_obj)
+            script_lines = generator.generate()
+
+            # D. 執行對話與評分 (模擬)
+            # 這裡為了加快速度，我們不產生 Patient 的 LLM 回應，只跑 User 的劇本並觸發 Scoring
+            chat_history_list = []
+
+            # 先寫入 UI 互動紀錄 (拿滿 UI 分數)
+            ui_interaction = SessionInteractionLog(
+                session_id=session_id,
+                module_id=module_id,
+                viewed_alltimes_ci=True,
+                viewed_chiachi_med=True,
+                viewed_med_allergy=True,
+                viewed_disease_diag=True,
+                viewed_cloud_med=True,
+            )
+            db.add(ui_interaction)
+            db.commit()
+
+            print(f"   ▶️ 執行 {len(script_lines)} 行對話腳本...")
+
+            # 逐行執行
+            history_text_for_patient = ""
+            for line_idx, user_text in enumerate(script_lines):
+                # 1. User 說話
+                db.add(
+                    ChatLog(
+                        session_id=session_id,
+                        role="user",
+                        text=user_text,
+                        agent_code=agent.agent_code,
+                        module_id=module_id,
+                    )
+                )
+                db.commit()
+
+                chat_history_list.append({"role": "user", "message": user_text})
+                history_text_for_patient += f"藥師：{user_text}\n"
+
+                # 2. 觸發評分 (取最近 5 句)
+                snippet = chat_history_list[-5:]
+                await scoring_service_manager.process_user_inputs_for_scoring(
+                    session_id, module_id, snippet, db
+                )
+
+                # 3. 為了讓評分邏輯 (Vector Search) 能運作正常，我們需要由 Patient 說句話
+                # 但為了省錢省時間，我們這裡用假資料回應，反正 User 劇本是固定的
+                # 除非評分邏輯有依賴 "Patient 說了什麼" (通常只看 User 說什麼)
+                fake_patient_response = "(點頭) 好的，我知道了。"
+                db.add(
+                    ChatLog(
+                        session_id=session_id,
+                        role="patient",
+                        text=fake_patient_response,
+                        agent_code=agent.agent_code,
+                        module_id=module_id,
+                    )
+                )
+                db.commit()
+                chat_history_list.append(
+                    {"role": "patient", "message": fake_patient_response}
+                )
+                history_text_for_patient += f"病患：{fake_patient_response}\n"
+
+            # E. 結算分數
+            final_scores = await scoring_service_manager.calculate_final_scores(
+                session_id, module_id, db
+            )
+            total_score = float(final_scores.get("total_score", 0))
+
+            # 更新分數到 DB
+            new_score_record = Scores(
+                session_id=session_id,
+                module_id=module_id,
+                **{
+                    k: v
+                    for k, v in final_scores.items()
+                    if k in Scores.__table__.columns.keys()
+                },
+            )
+            db.merge(new_score_record)
+            db.commit()
+
+            print(f"   🏁 結算分數: {total_score} / 63.0")
+
+            # F. 【關鍵步驟】執行失敗分析
+            if total_score < 60:  # 如果沒滿分 (或是設一個高標)，就進行分析
+                reports = await analyze_scoring_failure(session_id, module_id, db)
+
+                if reports:
+                    print(
+                        f"\n   ⚠️  發現 {len(reports)} 個評分失敗項目，AI 分析結果如下："
+                    )
+                    for r in reports:
+                        print(f"   {'-'*50}")
+                        print(f"   ❌ 項目 ID: {r['item_id']}")
+                        print(
+                            f"   🤖 原始判決: {r['original_response'][:100]}..."
+                        )  # 只印前100字
+                        print(f"   💡 除錯分析: \n{r['analysis']}")
+                        print(f"   {'-'*50}")
+                else:
+                    print(
+                        "   🎉 雖然沒滿分，但沒有找到 ScoringPromptLog 的失敗紀錄 (可能是 UI 或邏輯計算扣分)。"
+                    )
+            else:
+                print("   ✨ 完美滿分 (或接近滿分)，略過詳細分析。")
+
+    except Exception as e:
+        logger.error(f"Debug Mode 發生錯誤: {e}", exc_info=True)
+    finally:
+        db.close()
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="AI Healthcare System Auto Tester")
+    # 1. 建立一個共用的父解析器，用來處理 --env
+    # add_help=False 是為了不跟主解析器的 help 衝突
+    parent_parser = argparse.ArgumentParser(add_help=False)
+    parent_parser.add_argument(
+        "--env",
+        type=str,
+        default="auto",
+        choices=["dev", "human", "auto"],
+        help="指定要操作的資料庫環境 (預設: auto)",
+    )
+
+    # 2. 主解析器
+    parser = argparse.ArgumentParser(
+        description="AI Healthcare System Auto Tester",
+        parents=[parent_parser],  # 繼承共用參數
+    )
+
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    # --- 修改這裡 ---
+    # 3. 各個子命令都要繼承 parents=[parent_parser]
+    # 這樣 --env 就可以寫在子命令後面了
+
     # Replay Command
-    replay_parser = subparsers.add_parser("replay", help="Replay existing session(s)")
-    # 讓 session_id 變成選填 (nargs='?')，但如果沒加 --all 就必須填
-    replay_parser.add_argument("session_id", type=str, nargs="?", help="The specific Session ID to replay")
-    # 新增 --all 參數
-    replay_parser.add_argument("--all", action="store_true", help="Replay ALL original sessions in database")
-    # --- [新增] 指定模型參數 ---
+    replay_parser = subparsers.add_parser(
+        "replay", help="Replay existing session(s)", parents=[parent_parser]
+    )
     replay_parser.add_argument(
-        "--model",
-        type=str,
-        default=None,
-        help="Override Scoring Model (e.g., gemma2:9b, gemini-1.5-flash)",
+        "session_id", type=str, nargs="?", help="The specific Session ID to replay"
+    )
+    replay_parser.add_argument(
+        "--all", action="store_true", help="Replay ALL original sessions in database"
     )
 
     # Simulation Command
-    sim_parser = subparsers.add_parser("sim", help="Simulate a new conversation")
-    sim_parser.add_argument("--agent", type=str, default="A1", help="Agent Code (e.g., A1, B2)")
-    sim_parser.add_argument("--module", type=str, default="colonoscopy_bowklean", help="Module ID")
+    sim_parser = subparsers.add_parser(
+        "sim", help="Simulate a new conversation", parents=[parent_parser]
+    )
+    sim_parser.add_argument(
+        "--agent", type=str, default="A1", help="Agent Code (e.g., A1, B2)"
+    )
+    sim_parser.add_argument(
+        "--module", type=str, default="colonoscopy_bowklean", help="Module ID"
+    )
     sim_parser.add_argument("--turns", type=int, default=15, help="Max turns")
 
-    # --- 新增 Golden Command ---
-    golden_parser = subparsers.add_parser("golden", help="Run Golden Path Regression Test")
-    golden_parser.add_argument("--agent", type=str, help="Specific agent code to test (optional)")
-    golden_parser.add_argument("--iter", type=int, default=2, help="Iterations per agent (default: 2)")
+    # Golden Path Command
+    golden_parser = subparsers.add_parser(
+        "golden", help="Run Golden Path Regression Test", parents=[parent_parser]
+    )
+    golden_parser.add_argument("--agent", type=str, help="Specific agent code to test")
+    golden_parser.add_argument(
+        "--iter", type=int, default=2, help="Iterations per agent"
+    )
+
+    # Debug Command
+    debug_parser = subparsers.add_parser(
+        "debug",
+        help="Run Golden Path Debug Mode (A1-C5 once with Analysis)",
+        parents=[parent_parser],
+    )
 
     args = parser.parse_args()
 
-    # 確保資料庫已初始化 (Test DB)
+    # 確保資料庫已初始化 (根據選定的環境)
+    print(f"正在連接資料庫: {os.environ.get('APP_ENV')}...")
     init_database()
+
+    # 手動觸發資料寫入 (因為沒開 Server)
+    print("正在檢查並寫入 Agent 基礎資料...")
+    insert_agent_data()
 
     if args.command == "replay":
         if args.all:
             asyncio.run(run_all_replays())
         else:
-            if not args.session_id:
-                print("Error: session_id is required unless --all is specified.")
-            else:
+            if args.session_id:
                 asyncio.run(run_replay(args.session_id))
+            else:
+                print("錯誤: 請提供 session_id 或使用 --all")
     elif args.command == "sim":
         asyncio.run(run_simulation(args.module, args.agent, args.turns))
     elif args.command == "golden":
         asyncio.run(run_golden_path_test(args.agent, args.iter))
+    elif args.command == "debug":
+        asyncio.run(run_golden_path_debug_mode())
     else:
         parser.print_help()

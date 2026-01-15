@@ -10,24 +10,28 @@
 
 以下是我的專案架構
 HEALTHCARE_BACKEND
-    - scenarios
+    test
+        - auto_tester.py
+        - QA_script_content.py
+        - simulated_user.py
+    scenarios
         - colonoscopy_bowklean
-            - config.py
-            - patient_agent.py
-            - precomputation_logic.py
-            - scoring_criteria_vs.json
-            - scoring_logic.py
-            - summary_logic.py
+            -- config.py
+            -- patient_agent.py
+            -- precomputation_logic.py
+            -- scoring_criteria_vs.json
+            -- scoring_logic.py
+            -- summary_logic.py
         - colonoscopy_GI_Klean
             暫略
-    - agentset.py
-    - databases.py
-    - FindHistory.py
-    - Login.py
-    - main.py
-    - module_manager.py
-    - scoring_service_manager.py
-    - Scoring.py
-    - utils.py
-    - run.py
+    agentset.py
+    databases.py
+    FindHistory.py
+    Login.py
+    main.py
+    module_manager.py
+    scoring_service_manager.py
+    Scoring.py
+    utils.py
+    run.py
 
