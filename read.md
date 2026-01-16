@@ -41,3 +41,12 @@ python tests/auto_tester.py golden
 python tests/auto_tester.py sim
 # 使用 auto_test.db
 
+
+debug專用測試程式指令
+python tests/auto_tester.py --env auto debug
+
+範例答案進去做測試 15*2
+python tests/auto_tester.py golden --env auto
+
+輸出範例答案測試結果
+python tests/export_debug_report.py

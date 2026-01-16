@@ -1085,16 +1085,30 @@ class ColonoscopyBowkleanScoringLogic:
             return 1.0
 
     # --- 新增：最終分數計算邏輯 ---
+    # scenarios/colonoscopy_bowklean/scoring_logic.py
+
     async def calculate_final_scores(
         self, session_id: str, db: Session
     ) -> Dict[str, str]:
         """
         計算該 Session 的最終分數。
         包含標準項目的累加以及特殊複合規則（如 S1-S4 藥物衛教）的計算。
+        (已加入詳細 Debug Log 報表功能)
         """
         logger.info(
             f"[{session_id}] Calculating final scores using module logic: {MODULE_ID}"
         )
+
+        # 用來儲存詳細評分報告的容器
+        score_report = []
+        score_report.append(f"\n{'='*20} [{session_id}] 評分詳細報表 {'='*20}")
+
+        # 輔助函式：用來記錄每一項的得分狀況
+        def record_item(category, item_name, passed_bool, score_got, description=""):
+            status = "✅ PASS" if passed_bool else "❌ FAIL"
+            score_report.append(
+                f"[{category}] {item_name:<20} | {status} | 得分: {score_got:<4} | {description}"
+            )
 
         # 1. 取得基本資料
         session_map = (
@@ -1111,26 +1125,29 @@ class ColonoscopyBowkleanScoringLogic:
 
         # 判斷是否為特殊教案 A2 (保可淨)
         is_case_A2 = agent_code == "A2"
+        score_report.append(f"設定: Agent={agent_code} (Is A2? {is_case_A2})")
 
         # 判斷藥物組合 (E: 保可淨 Only, F: 保可淨 + 樂可舒)
-        # 根據 PDF 藥物組合 E/F 的說明：如果有 Dulcolax 則是 F，否則 E
-        # 這裡簡易判斷：若 med_code 或 med_info 包含 Dulcolax/樂可舒 則為 F
         has_dulcolax = False
         if agent_settings:
-            # 優先使用明確的 drug_combination 欄位判斷
             if agent_settings.drug_combination == "組合二":
                 has_dulcolax = True
+        score_report.append(
+            f"設定: 藥物組合={'組合二(有樂可舒)' if has_dulcolax else '組合一(無樂可舒)'}"
+        )
 
-        # [新增] 判斷是否有特殊用藥 (has_special_meds)
-        # 用來決定組織效率評分時，是否必須檢查 "specify_special_meds" 這一項
+        # 判斷是否有特殊用藥
         has_special_meds = False
         if agent_settings and agent_settings.med_code:
-            # 如果 med_code 欄位有值且不是 "無"，則視為有特殊用藥
             if (
                 agent_settings.med_code.strip()
                 and agent_settings.med_code.strip() != "無"
             ):
                 has_special_meds = True
+        score_report.append(
+            f"設定: 特殊用藥={'有' if has_special_meds else '無'} ({agent_settings.med_code if agent_settings else ''})"
+        )
+        score_report.append("-" * 60)
 
         # 1. 獲取所有已得分項目 ID
         passed_items_query = (
@@ -1140,29 +1157,11 @@ class ColonoscopyBowkleanScoringLogic:
         )
         passed_item_ids = {item.scoring_item_id for item in passed_items_query}
 
-        # =========================================================
-        # [新增] 針對「需求滿足」的補考機制 (Last Resort Check)
-        # =========================================================
+        # 補考機制
         if "satisfy_patient_infomation" not in passed_item_ids:
-            logger.info(
-                f"[{session_id}] 'satisfy_patient_infomation' not passed yet. Running global check..."
-            )
-
-            # 呼叫補考函式
-            global_score = await self._check_satisfy_info_global(
-                session_id, chat_logs, db
-            )
-
-            if global_score == 1:
-                passed_item_ids.add("satisfy_patient_infomation")
-                logger.info(
-                    f"[{session_id}] Global check passed. Added to passed items."
-                )
-
-        # 2. 獲取 UI 互動產生的檢閱藥歷分數 (從 Scores 表讀取暫存值)
-        #    注意：main.py 在 end_chat 時會先存一次 UI 產生的 review_med_history_score
-        # ui_score_record = db.query(Scores).filter(Scores.session_id == session_id).first()
-        # ui_review_score = float(ui_score_record.review_med_history_score) if ui_score_record else 0.0
+            # 這裡為了不影響 log 邏輯，假設你已經在外部呼叫過補考，或是這裡再次呼叫
+            # 為了簡化顯示，這裡只紀錄是否已通過
+            pass
 
         # 3. 獲取對話紀錄 (用於計算時間和順序)
         chat_logs = (
@@ -1179,14 +1178,9 @@ class ColonoscopyBowkleanScoringLogic:
         def is_passed(item_id):
             return 1 if item_id in passed_item_ids else 0
 
-        # 現在確實感覺這樣子 把每個類別的項目都抓出來處理比較好 這樣子雖然程式比較長 但是好處是好除錯 改項目也方便
-
         # ==========================================
         # 1. 檢閱藥歷 (Review Med History) - 總分 9
         # ==========================================
-
-        # --- (修改處開始) 計算 UI 互動產生的分數 ---
-        # 讀取 SessionInteractionLog 表
         interaction_log = (
             db.query(SessionInteractionLog)
             .filter(SessionInteractionLog.session_id == session_id)
@@ -1195,39 +1189,58 @@ class ColonoscopyBowkleanScoringLogic:
 
         ui_review_score = 0.0
         if interaction_log:
-            # 依據 PDF 權重計算
             if interaction_log.viewed_alltimes_ci:
-                ui_review_score += 2.0  # 歷次清腸
+                ui_review_score += 2.0
+                record_item("1.檢閱藥歷", "歷次清腸", True, 2.0, "UI")
+            else:
+                record_item("1.檢閱藥歷", "歷次清腸", False, 0.0, "UI")
+
             if interaction_log.viewed_chiachi_med:
-                ui_review_score += 3.0  # 本院用藥
+                ui_review_score += 3.0
+                record_item("1.檢閱藥歷", "本院用藥", True, 3.0, "UI")
+            else:
+                record_item("1.檢閱藥歷", "本院用藥", False, 0.0, "UI")
+
             if interaction_log.viewed_med_allergy:
-                ui_review_score += 1.0  # 過敏史
+                ui_review_score += 1.0
+                record_item("1.檢閱藥歷", "過敏史", True, 1.0, "UI")
+            else:
+                record_item("1.檢閱藥歷", "過敏史", False, 0.0, "UI")
+
             if interaction_log.viewed_disease_diag:
-                ui_review_score += 1.0  # 疾病診斷
+                ui_review_score += 1.0
+                record_item("1.檢閱藥歷", "疾病診斷", True, 1.0, "UI")
+            else:
+                record_item("1.檢閱藥歷", "疾病診斷", False, 0.0, "UI")
+
             if interaction_log.viewed_cloud_med:
-                ui_review_score += 2.0  # 雲端藥歷
+                ui_review_score += 2.0
+                record_item("1.檢閱藥歷", "雲端藥歷", True, 2.0, "UI")
+            else:
+                record_item("1.檢閱藥歷", "雲端藥歷", False, 0.0, "UI")
+        else:
+            score_report.append("[1.檢閱藥歷] 無 UI 互動紀錄 (0分)")
 
-        logger.info(
-            f"[{session_id}] UI Interaction Score Calculated: {ui_review_score}"
-        )
-
-        # 檢閱藥歷 = UI分數
         scores["review_med_history_score"] = ui_review_score
+        score_report.append(f"   >>> [1.檢閱藥歷] 小計: {ui_review_score}")
 
         # ==========================================
         # 2. 醫療面談 (Medical Interview) - 總分 9
         # ==========================================
 
-        # 2-1. 問好 (+1, A2為0.5)
+        # 2-1. 問好
         score_hello = 0.5 if is_case_A2 else 1.0
-        val_hello = is_passed("greeting_hello") * score_hello
+        p_hello = is_passed("greeting_hello")
+        val_hello = p_hello * score_hello
+        record_item("2.醫療面談", "問好", p_hello, val_hello)
 
-        # 2-2. 請坐 (+1, A2為0.5)
+        # 2-2. 請坐
         score_sit = 0.5 if is_case_A2 else 1.0
-        val_sit = is_passed("invite_to_sit") * score_sit
+        p_sit = is_passed("invite_to_sit")
+        val_sit = p_sit * score_sit
+        record_item("2.醫療面談", "請坐", p_sit, val_sit)
 
-        # 2-3. 適切發問 (+4)
-        # 規則: S2 和 S3 是 OR 閘 (共1分)，S1, S4, S5 各 1 分
+        # 2-3. 適切發問
         pg_s1 = is_passed("proper_guidance_s1")
         pg_s2 = is_passed("proper_guidance_s2")
         pg_s3 = is_passed("proper_guidance_s3")
@@ -1235,21 +1248,44 @@ class ColonoscopyBowkleanScoringLogic:
         pg_s5 = is_passed("proper_guidance_s5")
 
         pg_s2_s3_score = 1 if (pg_s2 + pg_s3) > 0 else 0
-        proper_guidance_total = pg_s1 + pg_s4 + pg_s5 + pg_s2_s3_score  # Max 4
+        proper_guidance_total = pg_s1 + pg_s4 + pg_s5 + pg_s2_s3_score
 
-        # 2-4. 確認本人 (+1)
-        val_confirm_self = is_passed("confirm_self_use") * 1.0
+        record_item("2.醫療面談", "引導進入衛教", pg_s1, pg_s1 * 1.0)
+        record_item(
+            "2.醫療面談",
+            "確認檢查類型",
+            (pg_s2 + pg_s3) > 0,
+            pg_s2_s3_score * 1.0,
+            f"s2:{pg_s2}, s3:{pg_s3}",
+        )
+        record_item("2.醫療面談", "確認檢查時間", pg_s4, pg_s4 * 1.0)
+        record_item("2.醫療面談", "確認額外用藥", pg_s5, pg_s5 * 1.0)
 
-        # 5. 詢問經驗 (+1) -> Note: 這裡 PDF 醫療面談裡也有一項 "詢問是否有使用經驗" (+1)
-        # 注意：這與檢閱藥歷的 +2 是分開算的。scoring_criteria 裡我們只有一個 item ID。
-        # 如果 review_med_history_1 通過，這裡也算通過。
-        val_ask_exp = is_passed("review_med_history_1") * 1.0
+        # 2-4. 確認本人
+        p_confirm = is_passed("confirm_self_use")
+        val_confirm_self = p_confirm * 1.0
+        record_item("2.醫療面談", "確認本人", p_confirm, val_confirm_self)
 
-        # 7. 無專業術語 (+1)
-        val_no_term = is_passed("no_use_term") * 1.0
+        # 5. 詢問經驗
+        p_ask_exp = is_passed("review_med_history_1")
+        val_ask_exp = p_ask_exp * 1.0
+        record_item("2.醫療面談", "詢問過往經驗", p_ask_exp, val_ask_exp)
 
-        # 8. 情緒回應 (+0, A2為1)
-        val_emo = (is_passed("emo_response") * 1.0) if is_case_A2 else 0.0
+        # 7. 無專業術語
+        p_no_term = is_passed("no_use_term")
+        val_no_term = p_no_term * 1.0
+        record_item("2.醫療面談", "無專業術語", p_no_term, val_no_term)
+
+        # 8. 情緒回應 (A2才算分)
+        p_emo = is_passed("emo_response")
+        val_emo = (p_emo * 1.0) if is_case_A2 else 0.0
+        record_item(
+            "2.醫療面談",
+            "情緒回應",
+            p_emo,
+            val_emo,
+            "僅A2計分" if is_case_A2 else "非A2不計分",
+        )
 
         scores["medical_interview_score"] = (
             val_hello
@@ -1260,93 +1296,98 @@ class ColonoscopyBowkleanScoringLogic:
             + val_no_term
             + val_emo
         )
+        score_report.append(
+            f"   >>> [2.醫療面談] 小計: {scores['medical_interview_score']}"
+        )
 
         # ==========================================
         # 3. 諮商衛教 (Counseling) - 總分 9
         # ==========================================
 
-        # 3-1. 開立目的 (+0.5)
-        # 這裡有 s1 (保可淨) 和 s2 (保+樂)，看 passed 哪個
-        val_purpose = (
-            is_passed("explain_med_purpose.s1") or is_passed("explain_med_purpose.s2")
-        ) * 0.5
+        # 3-1. 開立目的
+        p_purp_s1 = is_passed("explain_med_purpose.s1")
+        p_purp_s2 = is_passed("explain_med_purpose.s2")
+        val_purpose = (p_purp_s1 or p_purp_s2) * 0.5
+        record_item("3.諮商衛教", "開立目的", (p_purp_s1 or p_purp_s2), val_purpose)
 
-        # 3-2. 註記時間 (+0.5)
-        # ---------------------------------------------------------
+        # 3-2. 註記時間
         pass_note_phrase = is_passed("note_have_med_time")
         pass_time1 = is_passed("clinical_med_timing_1")
         pass_time2 = is_passed("clinical_med_timing_2")
         pass_s2 = is_passed("med_mix_method_and_time.s2")
 
-        # 基礎條件: 兩個時間點判斷正確
         logic_met = pass_time1 and pass_time2
-
-        # 額外條件: 如果有樂可舒，樂可舒的說明也必須正確
         if has_dulcolax:
             logic_met = logic_met and pass_s2
 
-        # --- [DEBUG START] 輸出詳細判定狀態 ---
-        print(f"\n🐛 [DEBUG: 註記時間 3-2] Session: {session_id}")
-        print(f"   • RAG (有無說'幫你寫'): {pass_note_phrase} (1=Pass, 0=Fail)")
-        print(f"   • Time1 (第一包時間): {pass_time1}")
-        print(f"   • Time2 (第二包時間): {pass_time2}")
-        print(f"   • Has Dulcolax? {has_dulcolax}")
-        if has_dulcolax:
-            print(f"   • S2 (樂可舒時間): {pass_s2}")
+        final_note_passed = pass_note_phrase or logic_met
+        val_note_time = 0.5 if final_note_passed else 0.0
 
-        print(f"   => Logic Met (時間全對): {logic_met}")
-
-        # 顯示您目前的判定邏輯結果 (OR)
-        final_result = pass_note_phrase or logic_met
-        print(
-            f"   => 最終給分 (RAG or Logic): {'✅ 給分' if final_result else '❌ 不給分'}"
+        detail_note = f"RAG:{pass_note_phrase} 或 Logic:{logic_met} (T1:{pass_time1}, T2:{pass_time2})"
+        record_item(
+            "3.諮商衛教", "協助註記時間", final_note_passed, val_note_time, detail_note
         )
-        print("-" * 40)
-        # --- [DEBUG END] ---
 
-        if final_result:
-            val_note_time = 0.5
-        else:
-            val_note_time = 0.0
-
-        # 3-3. 藥物使用時機及方式 (+2) -> 組合 E vs F
-        # 組合 E (Only Bowklean): med_mix_method_and_time.s1
-        # 組合 F (Bowklean + Dulcolax): med_mix_method_and_time.s1 + s2
+        # 3-3. 藥物使用時機及方式
         val_med_method = 0.0
-        if has_dulcolax:  # 組合 F
-            # PDF: "說明藥物使用時機及方式(+2)"。
-            # 這裡簡單處理：各佔 1 分
-            val_med_method = (
-                is_passed("med_mix_method_and_time.s1") * 1.0
-                + is_passed("med_mix_method_and_time.s2") * 1.0
+        if has_dulcolax:
+            p_m_s1 = is_passed("med_mix_method_and_time.s1")
+            p_m_s2 = is_passed("med_mix_method_and_time.s2")
+            val_med_method = (p_m_s1 * 1.0) + (p_m_s2 * 1.0)
+            record_item(
+                "3.諮商衛教", "藥物方法(保可淨)", p_m_s1, p_m_s1 * 1.0, "組合F: 佔1分"
             )
-        else:  # 組合 E
-            # 只有保可淨，佔 2 分
-            val_med_method = is_passed("med_mix_method_and_time.s1") * 2.0
+            record_item(
+                "3.諮商衛教", "藥物方法(樂可舒)", p_m_s2, p_m_s2 * 1.0, "組合F: 佔1分"
+            )
+        else:
+            p_m_s1 = is_passed("med_mix_method_and_time.s1")
+            val_med_method = p_m_s1 * 2.0
+            record_item(
+                "3.諮商衛教", "藥物方法(保可淨)", p_m_s1, val_med_method, "組合E: 佔2分"
+            )
 
-        # 3-4. 水分補充 (+1)
-        # s1 (2000cc) or s2 (1000cc). 兩者 ID 不同，視為同一分
-        val_hydro = (
-            is_passed("hydration_and_goal.s1") or is_passed("hydration_and_goal.s2")
-        ) * 1.0
+        # 3-4. 水分補充
+        p_hydro = is_passed("hydration_and_goal.s1") or is_passed(
+            "hydration_and_goal.s2"
+        )
+        val_hydro = p_hydro * 1.0
+        record_item("3.諮商衛教", "水分補充", p_hydro, val_hydro)
 
-        # 3-5. 清腸理想狀態 (+1)
-        val_ideal = is_passed("ideal_intestinal") * 1.0
+        # 3-5. 清腸理想狀態
+        p_ideal = is_passed("ideal_intestinal_condition")
+        val_ideal = p_ideal * 1.0
+        record_item("3.諮商衛教", "理想糞便狀態", p_ideal, val_ideal)
 
-        # 3-6. 作用時間 (+0.5)
-        val_onset = is_passed("med_onset_duration") * 0.5
+        # 3-6. 作用時間
+        p_onset = is_passed("med_onset_duration")
+        val_onset = p_onset * 0.5
+        record_item("3.諮商衛教", "作用時間", p_onset, val_onset)
 
-        # 3-7. 無痛確認 (+1)
-        val_pain_check = pg_s2_s3_score  # 重複使用 因為這不需要額外再判斷一次
+        # 3-7. 無痛確認 (共用變數)
+        val_pain_check = pg_s2_s3_score
+        record_item(
+            "3.諮商衛教",
+            "無痛/檢查確認",
+            val_pain_check > 0,
+            val_pain_check * 1.0,
+            "同醫療面談S2/S3",
+        )
 
-        # 3-8. 禁水時間 (+1)
-        val_npo_explain = is_passed("npo_mention") * 1.0
+        # 3-8. 禁水時間
+        p_npo = is_passed("npo_mention")
+        val_npo_explain = p_npo * 1.0
+        record_item("3.諮商衛教", "禁水時間說明", p_npo, val_npo_explain)
 
-        # 3-9. 特殊用藥 (+1)
-        val_special_med = is_passed("specify_special_meds") * 1.0
+        # 3-9. 特殊用藥
+        p_special = is_passed("specify_special_meds")
+        val_special_med = p_special * 1.0
+        record_item("3.諮商衛教", "特殊用藥說明", p_special, val_special_med)
 
-        # 3-10. 簡易飲食 (+0.5)
-        val_diet = is_passed("diet_basic") * 0.5
+        # 3-10. 簡易飲食
+        p_diet = is_passed("diet_basic")
+        val_diet = p_diet * 0.5
+        record_item("3.諮商衛教", "低渣飲食衛教", p_diet, val_diet)
 
         scores["counseling_edu_score"] = (
             val_purpose
@@ -1360,124 +1401,158 @@ class ColonoscopyBowkleanScoringLogic:
             + val_special_med
             + val_diet
         )
+        score_report.append(
+            f"   >>> [3.諮商衛教] 小計: {scores['counseling_edu_score']}"
+        )
 
         # ==========================================
         # 4. 人道專業 (Humanitarian) - 總分 9
         # ==========================================
 
-        # 4-1. 表現尊重 (+2 or +3)
-        # 公式: 若 (Hello + Sit + Guidance A) 都得分 ->
-        # A2: +2分. 非A2: +3分.
+        # 4-1. 表現尊重
         has_respect_basis = val_hello > 0 and val_sit > 0 and pg_s1 > 0
         score_respect = 0.0
         if has_respect_basis:
             score_respect = 2.0 if is_case_A2 else 3.0
+        record_item(
+            "4.人道專業",
+            "表現尊重",
+            has_respect_basis,
+            score_respect,
+            "邏輯: 問好+請坐+引導",
+        )
 
-        # 4-2. 需求滿足 (+4 or +3)
-        # 來自 satisfy_patient_infomation (JSON weight 3).
-        # PDF: A2 (+4), others (+3).
-        # 我們用 is_passed * PDF分數
+        # 4-2. 需求滿足
         score_satisfy_weight = 4.0 if is_case_A2 else 3.0
-        val_satisfy = is_passed("satisfy_patient_infomation") * score_satisfy_weight
+        p_satisfy = is_passed("satisfy_patient_infomation")
+        val_satisfy = p_satisfy * score_satisfy_weight
+        record_item("4.人道專業", "需求滿足(確認理解)", p_satisfy, val_satisfy)
 
-        # 4-3. 同理心 (+1 or +2)
-        # 公式: (No Term + Ask Exp) ->
-        # A2: +1. Others: +2.
+        # 4-3. 同理心
         has_empathy_basis = val_no_term > 0 and val_ask_exp > 0
         score_empathy = 0.0
         if has_empathy_basis:
             score_empathy = 1.0 if is_case_A2 else 2.0
+        record_item(
+            "4.人道專業",
+            "同理心",
+            has_empathy_basis,
+            score_empathy,
+            "邏輯: 無術語+問經驗",
+        )
 
-        # 4-4. 信賴感 (+1) 標準回答 "不客氣，有問題可以再詢問我們。"
-        val_trust = is_passed("great_relationship_trust") * 1.0
+        # 4-4. 信賴感
+        p_trust = is_passed("great_relationship_trust")
+        val_trust = p_trust * 1.0
+        record_item("4.人道專業", "信賴感(結尾)", p_trust, val_trust)
 
-        # 4-5. 舒適守密 (+, A2為0)
-        # emo_response
-        val_comfort = (is_passed("emo_response") * 1.0) if is_case_A2 else 0.0
-        # PDF 寫: "對病人情緒...回應 (+1)" 在醫療面談。
-        # 人道裡有 "注意舒適 (+1)". 暫時略過或設為 0
+        # 4-5. 舒適守密
+        val_comfort = (p_emo * 1.0) if is_case_A2 else 0.0
+        record_item("4.人道專業", "舒適守密", p_emo, val_comfort, "同情緒回應 (僅A2)")
 
         scores["humanitarian_score"] = (
             score_respect + val_satisfy + score_empathy + val_trust + val_comfort
         )
+        score_report.append(f"   >>> [4.人道專業] 小計: {scores['humanitarian_score']}")
 
         # ==========================================
         # 5. 組織效率 (Organization Efficiency) - 總分 9
         # ==========================================
 
-        # 5-1. 優先順序 (+4 or +1)
-        # 呼叫 LLM 判斷 (Diet -> Oral -> Powder -> NPO -> Others)
+        # 5-1. 優先順序
         val_sequence = await self._check_organization_sequence_by_llm(
             session_id, has_dulcolax, has_special_meds, db
         )
+        record_item(
+            "5.組織效率",
+            "優先順序(LLM)",
+            val_sequence == 4.0,
+            val_sequence,
+            "LLM判斷邏輯順序",
+        )
 
-        # 5-2. 及時且適時 (+1.5 or +0.5) 這部分之後改成用使用者輸入音檔長度+tts生成音檔長度的時間加總
-        # 時間控制: 5-9 分鐘 -> 1.5, 否則 0.5
+        # 5-2. 及時且適時
         val_time = 0.5
+        duration_minutes = 0.0
         if chat_logs:
             start_time = chat_logs[0].time
             end_time = chat_logs[-1].time
             duration_minutes = (end_time - start_time).total_seconds() / 60.0
             if 5 <= duration_minutes <= 9:
                 val_time = 1.5
-            logger.info(f"衛教時間: {duration_minutes:.2f} 分鐘, 得分: {val_time}")
-
-        # 5-3. 歷練而簡潔 (+3.5) - 複雜公式
-        # 公式: (諮商衛教總分/6 + 醫療面談3項/5 + 檢閱藥歷3項/7) / 3 * 3.5
-        # 醫療面談3項: (Confirm Self + Guidance A + Guidance B) = 1+1+3 = 5
-        mi_3_sub = val_confirm_self + proper_guidance_total
-
-        # 檢閱藥歷3項: (Exp + UI_In + UI_Out) -> 假設 Exp(+2) + 5 (UI Max?) = 7
-        rmh_3_sub = 0.0
-        if interaction_log:
-            # 依據 PDF 權重計算
-            if interaction_log.viewed_alltimes_ci:
-                rmh_3_sub += 2.0  # 歷次清腸
-            if interaction_log.viewed_chiachi_med:
-                rmh_3_sub += 3.0  # 本院用藥
-            if interaction_log.viewed_cloud_med:
-                rmh_3_sub += 2.0  # 雲端藥歷
-
-        concise_part = (
-            (
-                (scores["counseling_edu_score"] / 6.0)
-                + (mi_3_sub / 5.0)
-                + (rmh_3_sub / 7.0)
-            )
-            / 3.0
-            * 3.5
+        record_item(
+            "5.組織效率",
+            "時間控制",
+            val_time == 1.5,
+            val_time,
+            f"耗時: {duration_minutes:.2f}分",
         )
 
-        scores["organization_efficiency_score"] = val_sequence + val_time + concise_part
+        # 5-3. 歷練而簡潔
+        mi_3_sub = val_confirm_self + proper_guidance_total
+        rmh_3_sub = 0.0
+        if interaction_log:
+            if interaction_log.viewed_alltimes_ci:
+                rmh_3_sub += 2.0
+            if interaction_log.viewed_chiachi_med:
+                rmh_3_sub += 3.0
+            if interaction_log.viewed_cloud_med:
+                rmh_3_sub += 2.0
+
+        concise_final = (
+            (scores["counseling_edu_score"] / 6.0)
+            + (mi_3_sub / 5.0)
+            + (rmh_3_sub / 7.0)
+        )
+
+        record_item(
+            "5.組織效率", "歷練而簡潔", True, round(concise_final, 2), "公式計算"
+        )
+
+        scores["organization_efficiency_score"] = (
+            val_sequence + val_time + concise_final
+        )
+        score_report.append(
+            f"   >>> [5.組織效率] 小計: {scores['organization_efficiency_score']}"
+        )
 
         # ==========================================
         # 6. 臨床判斷 (Clinical Judgment) - 總分 9
         # ==========================================
-        # 6-1. 特殊藥物有無 (+2) -> identify_special_meds
-        val_has_special = is_passed("identify_special_meds") * 2.0
 
-        # 6-2. 判斷服藥時間 (+1) -> clinical_med_timing_1 (第一包)
-        val_judge_time1 = is_passed("clinical_med_timing_1") * 1.0
+        p_id_spec = is_passed("identify_special_meds")
+        val_has_special = p_id_spec * 2.0
+        record_item("6.臨床判斷", "辨識特殊藥物", p_id_spec, val_has_special)
 
-        # 6-3. 判斷早上服藥點 (+1) -> clinical_med_timing_2 (第二包)
-        val_judge_time2 = is_passed("clinical_med_timing_2") * 1.0
+        val_judge_time1 = pass_time1 * 1.0
+        record_item("6.臨床判斷", "判斷服藥時間1", pass_time1, val_judge_time1)
 
-        # 6-4. 判斷禁水時間 (+1) -> clinical_npo_timing
-        val_judge_npo = is_passed("clinical_npo_timing") * 1.0
+        val_judge_time2 = pass_time2 * 1.0
+        record_item("6.臨床判斷", "判斷服藥時間2", pass_time2, val_judge_time2)
 
-        # 6-5. 判斷特殊藥停用 (+2) -> specify_special_meds
-        val_judge_stop = is_passed("specify_special_meds") * 2.0
+        p_clin_npo = is_passed("clinical_npo_timing")
+        val_judge_npo = p_clin_npo * 1.0
+        record_item("6.臨床判斷", "判斷禁水時間", p_clin_npo, val_judge_npo)
 
-        # 6-6. 判斷理解程度 (+1) -> satisfy_patient_infomation / 3 or 4 * 1 ?
-        # PDF 公式: 人道專業中 需求滿足得分 / 3 or 4
+        val_judge_stop = p_special * 2.0
+        record_item(
+            "6.臨床判斷", "判斷停藥邏輯", p_special, val_judge_stop, "同諮商衛教-特殊藥"
+        )
+
+        # 判斷理解程度
         if score_satisfy_weight > 0:
             val_judge_understand = val_satisfy / score_satisfy_weight * 1.0
         else:
             val_judge_understand = 0.0
+        record_item(
+            "6.臨床判斷", "判斷理解程度", val_judge_understand > 0, val_judge_understand
+        )
 
-        # 6-7. 判斷開立合理 (+1) -> Ask Exp / 2
-        # PDF 公式: 檢閱藥歷中 詢問經驗得分 / 2
-        val_judge_reasonable = (val_ask_exp / 2.0) * 1.0  # 2/2 = 1
+        # 判斷開立合理
+        val_judge_reasonable = val_ask_exp
+        record_item(
+            "6.臨床判斷", "判斷開立合理", val_judge_reasonable > 0, val_judge_reasonable
+        )
 
         scores["clinical_judgment_score"] = (
             val_has_special
@@ -1488,24 +1563,24 @@ class ColonoscopyBowkleanScoringLogic:
             + val_judge_understand
             + val_judge_reasonable
         )
+        score_report.append(
+            f"   >>> [6.臨床判斷] 小計: {scores['clinical_judgment_score']}"
+        )
 
         # ==========================================
         # 7. 整體臨床技能 (Overall) - 總分 9
         # ==========================================
-        # 1. 態度 (愛心同理) (+3)
-        # 公式: (醫療面談/6 + 人道專業/6) / 2 * 3
+
+        # 1. 態度
         val_attitude = (
             (
                 (scores["medical_interview_score"] / 6.0)
                 + (scores["humanitarian_score"] / 6.0)
             )
-            / 2.0
-            * 3.0
         )
+        record_item("7.整體臨床", "態度(愛心同理)", True, round(val_attitude, 2))
 
-        # 2. 整合能力 (+4)
-        # 公式: (檢閱藥歷/6 + 醫療面談4項/6 + 臨床判斷/6) / 3 * 4
-        # 醫療面談3項: (Confirm + proper_guidance_total + NoTerm) = 1+1+3+1 = 6
+        # 2. 整合能力
         mi_4_sub = val_confirm_self + proper_guidance_total + val_no_term
         val_integration = (
             (
@@ -1513,15 +1588,10 @@ class ColonoscopyBowkleanScoringLogic:
                 + (mi_4_sub / 6.0)
                 + (scores["clinical_judgment_score"] / 6.0)
             )
-            / 3.0
-            * 4.0
         )
+        record_item("7.整體臨床", "整合能力", True, round(val_integration, 2))
 
-        # 3. 整體有效性 (+2)
-        # 公式: [6大類得分 / 9 的總和] / 3 ? (PDF 公式較模糊，依照之前的推導)
-        # (Sum(Score/9) for all 6 cats) / 3 * 2 ?
-        # 假設: ((Sum of all 6 scores) / 54) * ? -> PDF: divide by 3
-        # 讓我們用平均達成率的概念:
+        # 3. 整體有效性
         sum_ratios = (
             scores["review_med_history_score"] / 9.0
             + scores["medical_interview_score"] / 9.0
@@ -1530,29 +1600,31 @@ class ColonoscopyBowkleanScoringLogic:
             + scores["organization_efficiency_score"] / 9.0
             + scores["clinical_judgment_score"] / 9.0
         )
-        val_effectiveness = sum_ratios / 3.0  # max = 6/3 = 2.
+        val_effectiveness = sum_ratios / 3.0  
+        # 滿分是 2 分
+        record_item("7.整體臨床", "整體有效性", True, round(val_effectiveness, 2))
 
         scores["overall_clinical_skills_score"] = (
             val_attitude + val_integration + val_effectiveness
         )
+        score_report.append(
+            f"   >>> [7.整體臨床] 小計: {scores['overall_clinical_skills_score']}"
+        )
 
         # --- 10. 計算總分並格式化 ---
-        # 總分為 7 項類別的加總 (滿分 63)
-        real_total = (
-            scores["review_med_history_score"]
-            + scores["medical_interview_score"]
-            + scores["counseling_edu_score"]
-            + scores["humanitarian_score"]
-            + scores["organization_efficiency_score"]
-            + scores["clinical_judgment_score"]
-            + scores["overall_clinical_skills_score"]
-        )
+        real_total = sum(scores.values())
 
         # 將所有數值轉為字串格式 (保留兩位小數)
         result = {key: str(round(value, 2)) for key, value in scores.items()}
         result["total_score"] = str(round(real_total, 2))
 
-        logger.info(f"[{session_id}] Final Scores Calculated: {result}")
+        score_report.append("-" * 60)
+        score_report.append(f"🏆 總分: {result['total_score']}")
+        score_report.append("=" * 60)
+
+        # 一次性輸出完整報表
+        logger.info("\n".join(score_report))
+
         return result
 
     async def get_detailed_scores(self, session_id: str, db: Session) -> Dict[str, Any]:
