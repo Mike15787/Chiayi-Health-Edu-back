@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 import logging
 import json
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from datetime import datetime
 from utils import generate_llm_response
 from databases import (
@@ -22,7 +22,7 @@ score_router = APIRouter(prefix="/scoring", tags=["Scoring"])
 class FinishRequest(BaseModel):
     session_id: str
     username: str
-    
+
 # --- 新增 Pydantic Models ---
 class ScoreItemDetail(BaseModel):
     item_id: str
@@ -83,10 +83,26 @@ class FeedbackMessageModel(BaseModel):
     text: str
     time: datetime
     achieved_items: List[AchievedItemModel] = []
+    audio_url: Optional[str] = None  # [新增] 用來存放音檔連結
 
 class FullFeedbackResponse(BaseModel):
     session_id: str
     full_history: List[FeedbackMessageModel]
+
+
+def get_no_interaction_summary() -> dict:
+    msg = "學員未進行任何對話或互動，無法進行評估。"
+    return {
+        "total_summary": msg,
+        "review_med_history_summary": "未進行檢閱。",
+        "medical_interview_summary": "未進行對話。",
+        "counseling_edu_summary": "未進行衛教。",
+        "clinical_judgment_summary": "無對話紀錄，無法判斷。",
+        "humanitarian_summary": "無互動。",
+        "organization_efficiency_summary": "未開始衛教流程。",
+        "overall_clinical_skills_summary": "學員未進行操作。",
+    }
+
 
 # --- 輔助函數：安全的 JSON 解析 ---
 def parse_llm_json(raw_text: str) -> dict:
@@ -124,7 +140,7 @@ def get_default_summary() -> dict:
 async def finish_and_score_session(request: FinishRequest, db: Session = Depends(get_db)):
     session_id = request.session_id
     username = request.username
-    
+
     logger.info(f"收到結束請求: Session={session_id}, User={username}")
 
     try:
@@ -132,10 +148,10 @@ async def finish_and_score_session(request: FinishRequest, db: Session = Depends
         session_map = db.query(SessionUserMap).filter(
             SessionUserMap.session_id == session_id
         ).first()
-        
+
         if not session_map:
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
         module_id = session_map.module_id
 
         if scoring_service is None:
@@ -157,25 +173,39 @@ async def finish_and_score_session(request: FinishRequest, db: Session = Depends
         # 3. 生成總結 (Step 2) - 加入強力容錯
         logger.info("開始生成總結...")
         summary_data = get_default_summary() # 先給預設值
-        
+
         try:
             agent_settings = db.query(AgentSettings).filter(AgentSettings.agent_code == session_map.agent_code).first()
             chat_history_rows = db.query(ChatLog).filter(ChatLog.session_id == session_id).order_by(ChatLog.time.asc()).all()
-            chat_history_dicts = [{'role': e.role, 'text': e.text} for e in chat_history_rows]
 
-            summary_generator = scoring_service.get_summary_generator(module_id)
-            module_config = scoring_service.get_module_config(module_id)
-            
-            summary_prompt = await summary_generator(agent_settings, chat_history_dicts)
-            
-            # 呼叫 LLM
-            summary_result_str = await generate_llm_response(summary_prompt, module_config.SCORING_MODEL_NAME)
-            
-            # 解析 JSON
-            parsed_summary = parse_llm_json(summary_result_str)
-            # 合併，確保不會少了欄位
-            summary_data.update(parsed_summary)
-            
+            # 計算使用者(學員)講了幾句話
+            user_msg_count = sum(1 for log in chat_history_rows if log.role == "user")
+            if user_msg_count == 0:
+                logger.info(
+                    f"Session {session_id} 無使用者發言，使用固定評語，跳過 LLM。"
+                )
+                summary_data = get_no_interaction_summary()
+            else:
+                #只有在使用者輸入不為零才生成總結
+                chat_history_dicts = [
+                    {"role": e.role, "text": e.text} for e in chat_history_rows
+                ]
+
+                summary_generator = scoring_service.get_summary_generator(module_id)
+                module_config = scoring_service.get_module_config(module_id)
+
+                summary_prompt = await summary_generator(agent_settings, chat_history_dicts)
+
+                # 呼叫 LLM
+                summary_result_str = await generate_llm_response(
+                    summary_prompt, module_config.SCORING_MODEL_NAME
+                )
+
+                # 解析 JSON
+                parsed_summary = parse_llm_json(summary_result_str)
+                # 合併，確保不會少了欄位
+                summary_data.update(parsed_summary)
+
         except Exception as e:
             logger.error(f"總結生成失敗 (將使用預設值): {e}")
             # 重要：這裡我們捕獲異常但不拋出，讓程式繼續往下走去存分數
@@ -185,7 +215,7 @@ async def finish_and_score_session(request: FinishRequest, db: Session = Depends
         try:
             # 處理分數寫入 (Scores)
             existing_score = db.query(Scores).filter(Scores.session_id == session_id).first()
-            
+
             if existing_score:
                 logger.info("更新現有分數紀錄")
                 # 更新欄位
@@ -204,17 +234,17 @@ async def finish_and_score_session(request: FinishRequest, db: Session = Depends
             valid_summary_keys = Summary.__table__.columns.keys()
             filtered_summary = {k: v for k, v in summary_data.items() if k in valid_summary_keys}
             summary_record = Summary(session_id=session_id, module_id=module_id, **filtered_summary)
-            
+
             # merge 會自動判斷是 insert 還是 update
             db.merge(summary_record)
 
             # 更新 Session 狀態
             session_map.score = calculated_scores.get("total_score", "0")
             session_map.is_completed = True
-            
+
             db.commit()
             logger.info("資料庫寫入成功！")
-            
+
         except Exception as e:
             db.rollback()
             logger.error(f"資料庫寫入失敗: {e}")
@@ -261,7 +291,7 @@ async def get_score_details(session_id: str, db: Session = Depends(get_db)):
         import traceback
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Failed to generate score details: {str(e)}")
-    
+
 @score_router.get("/summary/{session_id}", response_model=SummaryResponse)
 async def get_summary_data(session_id: str, db: Session = Depends(get_db)):
     session_map = db.query(SessionUserMap).filter(SessionUserMap.session_id == session_id).first()
@@ -290,12 +320,12 @@ async def get_summary_data(session_id: str, db: Session = Depends(get_db)):
 
 @score_router.get("/feedback/{session_id}", response_model=FullFeedbackResponse)
 async def get_full_feedback(session_id: str, db: Session = Depends(get_db)):
-    
+
     # 1. 先檢查 Session 是否存在 (而不是檢查有沒有對話)
     session_map = db.query(SessionUserMap).filter(SessionUserMap.session_id == session_id).first()
     if not session_map:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     chat_logs = db.query(ChatLog).filter(ChatLog.session_id == session_id).order_by(ChatLog.time.asc()).all()
 
     module_id = get_module_id_by_session(session_id)
@@ -311,15 +341,15 @@ async def get_full_feedback(session_id: str, db: Session = Depends(get_db)):
         scoring_criteria_map = {}
 
     attributions = db.query(ScoringAttributionLog).filter(ScoringAttributionLog.session_id == session_id).all()
-    
+
     attribution_map = {}
     for attr in attributions:
         if attr.chat_log_id not in attribution_map:
             attribution_map[attr.chat_log_id] = []
-        
+
         item_details = scoring_criteria_map.get(attr.scoring_item_id, {})
         desc = item_details.get('item', attr.scoring_item_id)
-        
+
         attribution_map[attr.chat_log_id].append(
             AchievedItemModel(item_id=attr.scoring_item_id, item_description=desc)
         )
@@ -327,16 +357,23 @@ async def get_full_feedback(session_id: str, db: Session = Depends(get_db)):
     full_history = []
     for log in chat_logs:
         achieved_items = attribution_map.get(log.id, [])
+        # [新增] 處理音檔 URL
+        # 假設 main.py 設定的靜態路徑是 /audio/{filename}
+        audio_url = None
+        if log.role == "user" and log.audio_filename:
+            audio_url = f"/audio/{log.audio_filename}"
+
         full_history.append(
             FeedbackMessageModel(
                 id=log.id,
                 role=log.role,
                 text=log.text,
                 time=log.time,
-                achieved_items=achieved_items
+                achieved_items=achieved_items,
+                audio_url=audio_url,
             )
         )
-    
+
     return FullFeedbackResponse(
         session_id=session_id,
         full_history=full_history

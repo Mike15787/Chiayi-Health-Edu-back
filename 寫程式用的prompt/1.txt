@@ -12,8 +12,11 @@
 HEALTHCARE_BACKEND
     test
         - auto_tester.py
+        - export_dubug_report.py
         - QA_script_content.py
         - simulated_user.py
+        - standard_script_generator.py
+        - voice_replay_tester.py
     scenarios
         - colonoscopy_bowklean
             -- config.py
@@ -34,4 +37,5 @@ HEALTHCARE_BACKEND
     Scoring.py
     utils.py
     run.py
+    review_app.py
 

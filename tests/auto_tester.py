@@ -237,9 +237,24 @@ async def run_replay(source_session_id: str):
                 logger.info(f"正在重新評分 ({new_session_id}): {log.text[:20]}...")
                 snippet_to_score = current_history[-5:]
 
+                new_chat_log = (
+                    db.query(ChatLog)
+                    .filter(
+                        ChatLog.session_id == new_session_id,
+                        ChatLog.role == "user",
+                        ChatLog.text == log.text,
+                        # 也可以加上時間判斷，但通常內容+session+role 已經足夠唯一 (在順序執行下)
+                    )
+                    .order_by(ChatLog.id.desc())
+                    .first()
+                )
+
+                current_chat_log_id = new_chat_log.id if new_chat_log else None
+
                 newly_passed = (
                     await scoring_service_manager.process_user_inputs_for_scoring(
-                        new_session_id, module_id, snippet_to_score, db
+                        new_session_id, module_id, snippet_to_score, db,
+                        chat_log_id=current_chat_log_id
                     )
                 )
                 if newly_passed:

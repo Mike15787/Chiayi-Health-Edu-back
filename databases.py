@@ -8,6 +8,8 @@ from sqlalchemy import (
     Boolean,
     UniqueConstraint,
     ForeignKey,
+    inspect,
+    text,
 )
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from datetime import datetime, timezone, timedelta
@@ -16,6 +18,7 @@ import secrets
 from typing import Optional
 import argparse
 import os
+import json
 
 APP_ENV = os.getenv("APP_ENV", "dev")
 
@@ -45,6 +48,11 @@ SessionLocal = sessionmaker(bind=engine)
 # 學習次數是會更新的東西 更新時間大概是使用者確定完成了一個session 之後的事
 # 大概也需要分類
 
+TAIPEI_TZ = timezone(timedelta(hours=8))
+
+def get_taipei_now():
+    """取得目前的台灣時間"""
+    return datetime.now(TAIPEI_TZ)
 
 # --- 資料庫模型 ---
 class UserLogin(Base):
@@ -84,6 +92,9 @@ class ChatLog(Base):
         String(255), nullable=True, comment="使用者音檔以及AI回應音檔檔名"
     )
     time = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    # [新增] 用來存 JSON 格式的除錯資訊 (例如：向量搜尋結果)
+    # 在正式環境可以保持為 NULL
+    debug_info = Column(Text, nullable=True, comment="JSON格式的除錯資訊")
 
 
 # answerlog的用處就是在對話過程中 能夠知道哪些需要LLM評分的項目已經被評過分
@@ -233,6 +244,9 @@ class ScoringPromptLog(Base):
     final_score = Column(Integer, nullable=False, comment="解析後的最終分數 (0 或 1)")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), comment="紀錄建立時間")
 
+    # [新增] 關聯 ID
+    chat_log_id = Column(Integer, ForeignKey("chatlog.id"), nullable=True, index=True)
+
 
 class ScoringAttributionLog(Base):
     __tablename__ = "scoring_attribution_log"
@@ -273,6 +287,7 @@ class SessionInteractionLog(Base):
 def init_database():
     """初始化資料庫，創建所有表格"""
     Base.metadata.create_all(engine)
+    sync_db_schema(engine)
 
 
 def get_db():
@@ -772,6 +787,41 @@ def delete_table(table_name: str):
             print(f"刪除資料表 '{table_name}' 失敗: {e}")
     else:
         print(f"取消刪除資料表 '{table_name}'。")
+
+
+# 3. [新增] 自動修補資料庫結構的函式 (神器)
+def sync_db_schema(engine):
+    """
+    自動檢查資料庫，如果發現 Python Model 有新欄位但 DB 沒有，就自動加上去。
+    解決手動遷移的痛苦。
+    """
+    inspector = inspect(engine)
+    metadata = Base.metadata
+
+    with engine.connect() as conn:
+        for table_name, table_obj in metadata.tables.items():
+            if not inspector.has_table(table_name):
+                continue  # init_database 會負責建立新表
+
+            # 找出 DB 裡現有的欄位
+            existing_cols = [c["name"] for c in inspector.get_columns(table_name)]
+
+            for column in table_obj.columns:
+                if column.name not in existing_cols:
+                    print(
+                        f"🛠️ [Auto-Fix] 發現新欄位 '{table_name}.{column.name}'，正在自動新增..."
+                    )
+                    col_type = column.type.compile(engine.dialect)
+                    try:
+                        # SQLite 的 ADD COLUMN 語法
+                        conn.execute(
+                            text(
+                                f"ALTER TABLE {table_name} ADD COLUMN {column.name} {col_type}"
+                            )
+                        )
+                        print(f"✅ 成功新增欄位！")
+                    except Exception as e:
+                        print(f"⚠️ 自動新增欄位失敗 (可能需手動處理): {e}")
 
 
 # 自動初始化資料庫

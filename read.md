@@ -50,3 +50,13 @@ python tests/auto_tester.py golden --env auto
 
 輸出範例答案測試結果
 python tests/export_debug_report.py
+
+
+--------------------
+ngrok 啟動方式
+ngrok start --all
+
+--------------------
+streamlit 啟動方式
+用來視覺化整個測試過程
+streamlit run review_app.py

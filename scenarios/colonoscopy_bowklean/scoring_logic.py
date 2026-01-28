@@ -1,4 +1,5 @@
 # scenarios/colonoscopy_bowklean/scoring_logic.py
+import os
 import json
 import logging
 import numpy as np
@@ -112,7 +113,13 @@ class ColonoscopyBowkleanScoringLogic:
         return list(relevant_ids)
 
     async def _call_llm_and_log(
-        self, session_id: str, item_id: str, prompt: str, model_name: str, db: Session
+        self,
+        session_id: str,
+        item_id: str,
+        prompt: str,
+        model_name: str,
+        db: Session,
+        chat_log_id: int = None,
     ) -> int:
         """呼叫 LLM 進行評分，並將 prompt 和 response 記錄到資料庫。"""
         try:
@@ -127,6 +134,7 @@ class ColonoscopyBowkleanScoringLogic:
                 prompt_text=prompt,
                 llm_response=raw_response,
                 final_score=score,
+                chat_log_id=chat_log_id,
             )
             db.add(log_entry)
 
@@ -141,7 +149,11 @@ class ColonoscopyBowkleanScoringLogic:
             return 0
 
     async def process_user_inputs_for_scoring(
-        self, session_id: str, chat_snippet: List[Dict], db: Session
+        self,
+        session_id: str,
+        chat_snippet: List[Dict],
+        db: Session,
+        chat_log_id: int = None,
     ) -> List[str]:
         """處理多個使用者輸入並進行評分"""
         if not chat_snippet:
@@ -178,6 +190,24 @@ class ColonoscopyBowkleanScoringLogic:
             )
             return []
 
+        # ======================================================
+        # [新增] 只有在測試環境下，才把搜尋結果寫回 ChatLog
+        # ======================================================
+        if chat_log_id and os.environ.get("APP_ENV") in ["auto", "human"]:
+            try:
+                # 撈出該句 chat_log
+                chat_entry = db.query(ChatLog).filter(ChatLog.id == chat_log_id).first()
+                if chat_entry:
+                    # 將 list 轉成 JSON string 存入
+                    debug_data = {"vector_found": relevant_ids}
+                    chat_entry.debug_info = json.dumps(debug_data, ensure_ascii=False)
+                    # 注意：這裡不急著 commit，後面 scoring 完會一起 commit，
+                    # 或者你可以這裡先 db.add(chat_entry); db.commit()
+                    db.add(chat_entry)
+                    db.commit()
+            except Exception as e:
+                logger.error(f"寫入 Debug Info 失敗: {e}")
+
         # 4. 準備資料庫查詢已通過項目
         already_passed_stmt = db.query(AnswerLog.scoring_item_id).filter(
             AnswerLog.session_id == session_id, AnswerLog.score == 1
@@ -209,6 +239,7 @@ class ColonoscopyBowkleanScoringLogic:
                     criterion,
                     db,
                     precomputed_data,
+                    chat_log_id=chat_log_id,
                 )
 
                 if score == 1:
@@ -223,6 +254,7 @@ class ColonoscopyBowkleanScoringLogic:
         criterion: dict,
         db: Session,
         precomputed_data: Optional[PrecomputedSessionAnswer],
+        chat_log_id: int = None,
     ):
         """對單個評分項目進行評分並儲存結果"""
         item_id = criterion["id"]
@@ -232,75 +264,75 @@ class ColonoscopyBowkleanScoringLogic:
         try:
             if item_type == "RAG":
                 score = await self._check_rag_basic(
-                    session_id, conversation_context, criterion, db
+                    session_id, conversation_context, criterion, db, chat_log_id
                 )
             elif item_type == "RAG_4b":
                 score = await self._check_rag_strong(
-                    session_id, conversation_context, criterion, db
+                    session_id, conversation_context, criterion, db, chat_log_id
                 )
             elif item_type == "RAG_confirm_med_time":
                 score = await self._check_confirm_med_time(
-                    session_id, conversation_context, criterion, precomputed_data, db
+                    session_id, conversation_context, criterion, precomputed_data, db, chat_log_id
                 )
             elif item_type == "RAG_confirm_npo":
                 score = await self._check_npo_time(
-                    session_id, conversation_context, precomputed_data, db
+                    session_id, conversation_context, precomputed_data, db, chat_log_id
                 )
             elif item_type == "RAG_diet_logic":
                 score = await self._check_diet_logic(
-                    session_id, conversation_context, precomputed_data, db
+                    session_id, conversation_context, precomputed_data, db, chat_log_id
                 )
             elif item_type == "RAG_med_usage_method":
                 score = await self._check_med_usage_method(
-                    session_id, conversation_context, criterion, db
+                    session_id, conversation_context, criterion, db, chat_log_id
                 )
             elif item_type == "RAG_special_meds":
                 score = await self._check_special_meds(
-                    session_id, conversation_context, db
+                    session_id, conversation_context, db, chat_log_id
                 )
             elif item_type == "non_term":
                 score = await self._check_non_term(
-                    session_id, conversation_context, criterion, db
+                    session_id, conversation_context, criterion, db, chat_log_id
                 )
             elif item_type == "RAG_emo_response":
                 score = await self._check_emo_response(
-                    session_id, conversation_context, criterion, db
+                    session_id, conversation_context, criterion, db, chat_log_id
                 )
             elif item_type == "RAG_review_med_history":
                 score = await self._check_review_med_history(
-                    session_id, conversation_context, criterion, db
+                    session_id, conversation_context, criterion, db, chat_log_id
                 )
             elif item_type == "first_med_mix_method":
                 # 對應: 說明保可淨使用方式 (泡製)
                 score = await self._check_med_mix_method(
-                    session_id, conversation_context, criterion, db
+                    session_id, conversation_context, criterion, db, chat_log_id
                 )
             elif item_type == "first_med_mix_time":
                 # 對應: 說明樂可舒使用方式 (錠劑時間)
                 score = await self._check_first_med_mix_time(
-                    session_id, conversation_context, criterion, db
+                    session_id, conversation_context, criterion, db, chat_log_id
                 )
             elif item_type == "hydration_method":
                 # [修正] 區分 s1 (2000cc) 與 s2 (1000cc)
                 score = await self._check_hydration_method(
-                    session_id, conversation_context, criterion, db
+                    session_id, conversation_context, criterion, db, chat_log_id
                 )
             elif item_type == "ideal_intestinal":
                 score = await self._check_ideal_intestinal(
-                    session_id, conversation_context, criterion, db
+                    session_id, conversation_context, criterion, db, chat_log_id
                 )
             elif item_type == "RAG_explain_npo":
                 # 這是單純檢查「有無提到禁水」，不同於 RAG_confirm_npo (檢查時間點準確性)
                 score = await self._check_explain_npo_mention(
-                    session_id, conversation_context, criterion, db
+                    session_id, conversation_context, criterion, db, chat_log_id
                 )
             elif item_type == "RAG_guidance3_check_type":
                 score = await self._check_proper_guidance_s3(
-                    session_id, conversation_context, criterion, db
+                    session_id, conversation_context, criterion, db, chat_log_id
                 )
             else:  # 對於未定義的類型，使用基礎 RAG 邏輯
                 score = await self._check_rag_basic(
-                    session_id, conversation_context, criterion, db
+                    session_id, conversation_context, criterion, db, chat_log_id
                 )
 
             stmt = sqlite_insert(AnswerLog).values(
@@ -326,7 +358,12 @@ class ColonoscopyBowkleanScoringLogic:
             return 0
 
     async def _check_rag_basic(
-        self, session_id: str, conversation_context: str, criterion: dict, db: Session
+        self,
+        session_id: str,
+        conversation_context: str,
+        criterion: dict,
+        db: Session,
+        chat_log_id: int = None,
     ) -> int:
         """使用優化後的 LLM 進行基礎 RAG 評分"""
         prompt = f"""
@@ -349,11 +386,21 @@ class ColonoscopyBowkleanScoringLogic:
         [你的判斷 (只輸出 1 或 0)]:
         """
         return await self._call_llm_and_log(
-            session_id, criterion["id"], prompt, SCORING_MODEL_NAME, db
+            session_id,
+            criterion["id"],
+            prompt,
+            SCORING_MODEL_NAME,
+            db,
+            chat_log_id=chat_log_id,
         )
 
     async def _check_rag_strong(
-        self, session_id: str, conversation_context: str, criterion: dict, db: Session
+        self,
+        session_id: str,
+        conversation_context: str,
+        criterion: dict,
+        db: Session,
+        chat_log_id: int = None,
     ) -> int:
         """使用更強的 gemma:4b 模型進行評分"""
         prompt = f"""
@@ -369,7 +416,12 @@ class ColonoscopyBowkleanScoringLogic:
         [你的判斷 (1 或 0)]:
         """
         return await self._call_llm_and_log(
-            session_id, criterion["id"], prompt, STRONGER_SCORING_MODEL_NAME, db
+            session_id,
+            criterion["id"],
+            prompt,
+            STRONGER_SCORING_MODEL_NAME,
+            db,
+            chat_log_id=chat_log_id,
         )
 
     # 12/04檢查 OK
@@ -380,6 +432,7 @@ class ColonoscopyBowkleanScoringLogic:
         criterion: dict,
         precomputed_data: PrecomputedSessionAnswer,
         db: Session,
+        chat_log_id: int = None
     ) -> int:
         """檢查學員是否正確說明了第一包和第二包清腸劑的服用時間。"""
         if not precomputed_data:
@@ -413,7 +466,12 @@ class ColonoscopyBowkleanScoringLogic:
             return 0
 
         return await self._call_llm_and_log(
-            session_id, criterion["id"], prompt, SCORING_MODEL_NAME, db
+            session_id,
+            criterion["id"],
+            prompt,
+            SCORING_MODEL_NAME,
+            db,
+            chat_log_id=chat_log_id,
         )
 
     async def _check_npo_time(
@@ -422,6 +480,7 @@ class ColonoscopyBowkleanScoringLogic:
         conversation_context: str,
         precomputed_data: PrecomputedSessionAnswer,
         db: Session,
+        chat_log_id: int = None
     ) -> int:
         """檢查學員是否清楚說明禁水時間點，並連帶給予 npo_mention 分數。"""
         if not precomputed_data:
@@ -455,7 +514,12 @@ class ColonoscopyBowkleanScoringLogic:
         如果正確，只輸出 "1"。否則輸出 "0"。
         """
         score = await self._call_llm_and_log(
-            session_id, "clinical_npo_timing", prompt, SCORING_MODEL_NAME, db
+            session_id,
+            "clinical_npo_timing",
+            prompt,
+            SCORING_MODEL_NAME,
+            db,
+            chat_log_id=chat_log_id,
         )
 
         if score == 1:
@@ -482,7 +546,12 @@ class ColonoscopyBowkleanScoringLogic:
         return score
 
     async def _check_med_usage_method(
-        self, session_id: str, conversation_context: str, criterion: dict, db: Session
+        self,
+        session_id: str,
+        conversation_context: str,
+        criterion: dict,
+        db: Session,
+        chat_log_id: int = None,
     ) -> int:
         """檢查學員是否正確說明清腸劑的泡製方法。"""
         prompt = f"""
@@ -497,11 +566,20 @@ class ColonoscopyBowkleanScoringLogic:
         如果說明正確，只輸出 "1"。如果說明不完整或不正確，只輸出 "0"。
         """
         return await self._call_llm_and_log(
-            session_id, criterion["id"], prompt, SCORING_MODEL_NAME, db
+            session_id,
+            criterion["id"],
+            prompt,
+            SCORING_MODEL_NAME,
+            db,
+            chat_log_id=chat_log_id,
         )
 
     async def _check_special_meds(
-        self, session_id: str, conversation_context: str, db: Session
+        self,
+        session_id: str,
+        conversation_context: str,
+        db: Session,
+        chat_log_id: int = None,
     ) -> int:
         """根據病人的特殊用藥，判斷學員的衛教是否正確。"""
         session_map = (
@@ -562,7 +640,7 @@ class ColonoscopyBowkleanScoringLogic:
                         "specify_special_meds",
                         prompt,
                         SCORING_MODEL_NAME,
-                        db,
+                        db, chat_log_id=chat_log_id
                     )
                     if score == 1:
                         return 1  # 只要一個通過就返回1
@@ -577,7 +655,7 @@ class ColonoscopyBowkleanScoringLogic:
         session_id: str,
         conversation_context: str,
         precomputed_data: PrecomputedSessionAnswer,
-        db: Session,
+        db: Session, chat_log_id: int = None
     ) -> int:
         """檢查學員是否正確說明了飲食衛教。"""
         if not precomputed_data:
@@ -607,11 +685,21 @@ class ColonoscopyBowkleanScoringLogic:
         如果飲食觀念與時程正確，只輸出 "1"。如果不正確，只輸出 "0"。
         """
         return await self._call_llm_and_log(
-            session_id, "diet_basic", prompt, SCORING_MODEL_NAME, db
+            session_id,
+            "diet_basic",
+            prompt,
+            SCORING_MODEL_NAME,
+            db,
+            chat_log_id=chat_log_id,
         )
 
     async def _check_med_mix_method(
-        self, session_id: str, conversation_context: str, criterion: dict, db: Session
+        self,
+        session_id: str,
+        conversation_context: str,
+        criterion: dict,
+        db: Session,
+        chat_log_id: int = None,
     ) -> int:
         """檢查學員是否正確說明了特定一包清腸劑的泡製方法。"""
 
@@ -640,11 +728,21 @@ class ColonoscopyBowkleanScoringLogic:
         [你的判斷 (只輸出 1 或 0)]:
         """
         return await self._call_llm_and_log(
-            session_id, criterion["id"], prompt, SCORING_MODEL_NAME, db
+            session_id,
+            criterion["id"],
+            prompt,
+            SCORING_MODEL_NAME,
+            db,
+            chat_log_id=chat_log_id,
         )
 
     async def _check_first_med_mix_time(
-        self, session_id: str, conversation_context: str, criterion: dict, db: Session
+        self,
+        session_id: str,
+        conversation_context: str,
+        criterion: dict,
+        db: Session,
+        chat_log_id: int = None,
     ) -> int:
         prompt = f"""
         你是一位藥師。請檢查學員是否有針對「口服瀉藥錠劑」(例如：樂可舒/Dulcolax/粉紅色藥丸) 進行衛教。
@@ -654,12 +752,22 @@ class ColonoscopyBowkleanScoringLogic:
         有提到錠劑及其服用時機輸出 "1"，否則 "0"。
         """
         return await self._call_llm_and_log(
-            session_id, criterion["id"], prompt, SCORING_MODEL_NAME, db
+            session_id,
+            criterion["id"],
+            prompt,
+            SCORING_MODEL_NAME,
+            db,
+            chat_log_id=chat_log_id,
         )
 
     # 12/3 從non_term開始修正 好的 從non_term跳過XD 我這邊沒有那個專業用語集
     async def _check_non_term(
-        self, session_id: str, conversation_context: str, criterion: dict, db: Session
+        self,
+        session_id: str,
+        conversation_context: str,
+        criterion: dict,
+        db: Session,
+        chat_log_id: int = None,
     ) -> int:
         """
         檢查學員是否避免使用專業術語 (non_term)。
@@ -687,12 +795,22 @@ class ColonoscopyBowkleanScoringLogic:
         [請只輸出 1 或 0]:
         """
         return await self._call_llm_and_log(
-            session_id, criterion["id"], prompt, SCORING_MODEL_NAME, db
+            session_id,
+            criterion["id"],
+            prompt,
+            SCORING_MODEL_NAME,
+            db,
+            chat_log_id=chat_log_id,
         )
 
     # 1207 修正
     async def _check_emo_response(
-        self, session_id: str, conversation_context: str, criterion: dict, db: Session
+        self,
+        session_id: str,
+        conversation_context: str,
+        criterion: dict,
+        db: Session,
+        chat_log_id: int = None,
     ) -> int:
         """檢查學員是否對病人的情緒有適當回應 (同理心)。"""
         prompt = f"""
@@ -710,12 +828,22 @@ class ColonoscopyBowkleanScoringLogic:
         - 忽視病人情緒，只顧講自己的衛教內容：輸出 "0"
         """
         return await self._call_llm_and_log(
-            session_id, criterion["id"], prompt, SCORING_MODEL_NAME, db
+            session_id,
+            criterion["id"],
+            prompt,
+            SCORING_MODEL_NAME,
+            db,
+            chat_log_id=chat_log_id,
         )
 
     # 1207 修正
     async def _check_review_med_history(
-        self, session_id: str, conversation_context: str, criterion: dict, db: Session
+        self,
+        session_id: str,
+        conversation_context: str,
+        criterion: dict,
+        db: Session,
+        chat_log_id: int = None,
     ) -> int:
         """檢查學員是否詢問過往用藥經驗。"""
         prompt = f"""
@@ -733,12 +861,22 @@ class ColonoscopyBowkleanScoringLogic:
         如果有詢問經驗，請輸出 "1"，否則輸出 "0"。
         """
         return await self._call_llm_and_log(
-            session_id, criterion["id"], prompt, SCORING_MODEL_NAME, db
+            session_id,
+            criterion["id"],
+            prompt,
+            SCORING_MODEL_NAME,
+            db,
+            chat_log_id=chat_log_id,
         )
 
     # 1207 修正中
     async def _check_hydration_method(
-        self, session_id: str, conversation_context: str, criterion: dict, db: Session
+        self,
+        session_id: str,
+        conversation_context: str,
+        criterion: dict,
+        db: Session,
+        chat_log_id: int = None,
     ) -> int:
         item_id = criterion["id"]
 
@@ -762,11 +900,16 @@ class ColonoscopyBowkleanScoringLogic:
         符合輸出 "1"，不符合或未提及輸出 "0"。
         """
         return await self._call_llm_and_log(
-            session_id, item_id, prompt, SCORING_MODEL_NAME, db
+            session_id, item_id, prompt, SCORING_MODEL_NAME, db, chat_log_id=chat_log_id
         )
 
     async def _check_ideal_intestinal(
-        self, session_id: str, conversation_context: str, criterion: dict, db: Session
+        self,
+        session_id: str,
+        conversation_context: str,
+        criterion: dict,
+        db: Session,
+        chat_log_id: int = None,
     ) -> int:
         """檢查是否說明清腸理想狀態 (淡黃清澈)。"""
         prompt = f"""
@@ -783,11 +926,21 @@ class ColonoscopyBowkleanScoringLogic:
         沒提到 -> 輸出 "0"
         """
         return await self._call_llm_and_log(
-            session_id, criterion["id"], prompt, SCORING_MODEL_NAME, db
+            session_id,
+            criterion["id"],
+            prompt,
+            SCORING_MODEL_NAME,
+            db,
+            chat_log_id=chat_log_id,
         )
 
     async def _check_proper_guidance_s3(
-        self, session_id: str, conversation_context: str, criterion: dict, db: Session
+        self,
+        session_id: str,
+        conversation_context: str,
+        criterion: dict,
+        db: Session,
+        chat_log_id: int = None,
     ) -> int:
         """
         [Type: RAG_guidance3_check_type]
@@ -813,11 +966,21 @@ class ColonoscopyBowkleanScoringLogic:
         符合輸出 "1"，不符合輸出 "0"。
         """
         return await self._call_llm_and_log(
-            session_id, criterion["id"], prompt, SCORING_MODEL_NAME, db
+            session_id,
+            criterion["id"],
+            prompt,
+            SCORING_MODEL_NAME,
+            db,
+            chat_log_id=chat_log_id,
         )
 
     async def _check_explain_npo_mention(
-        self, session_id: str, conversation_context: str, criterion: dict, db: Session
+        self,
+        session_id: str,
+        conversation_context: str,
+        criterion: dict,
+        db: Session,
+        chat_log_id: int = None,
     ) -> int:
         """
         單純檢查學員是否有提到「禁水」這個動作 (RAG_explain_npo)。
@@ -837,11 +1000,20 @@ class ColonoscopyBowkleanScoringLogic:
         完全沒提到 -> 輸出 "0"
         """
         return await self._call_llm_and_log(
-            session_id, criterion["id"], prompt, SCORING_MODEL_NAME, db
+            session_id,
+            criterion["id"],
+            prompt,
+            SCORING_MODEL_NAME,
+            db,
+            chat_log_id=chat_log_id,
         )
 
     async def _check_satisfy_info_global(
-        self, session_id: str, chat_logs: List[ChatLog], db: Session
+        self,
+        session_id: str,
+        chat_logs: List[ChatLog],
+        db: Session,
+        chat_log_id: int = None,
     ) -> int:
         """
         [補考機制]
@@ -893,7 +1065,7 @@ class ColonoscopyBowkleanScoringLogic:
             "satisfy_patient_infomation_global",
             prompt,
             SCORING_MODEL_NAME,
-            db,
+            db, chat_log_id=chat_log_id
         )
 
         if score == 1:
@@ -1010,7 +1182,12 @@ class ColonoscopyBowkleanScoringLogic:
         return 4.0'''
 
     async def _check_organization_sequence_by_llm(
-        self, session_id: str, has_dulcolax: bool, has_special_meds: bool, db: Session
+        self,
+        session_id: str,
+        has_dulcolax: bool,
+        has_special_meds: bool,
+        db: Session,
+        chat_log_id: int = None,
     ) -> float:
         """
         [組織效率] 改用 LLM 閱讀整場對話，判斷衛教順序是否符合邏輯。
@@ -1026,10 +1203,62 @@ class ColonoscopyBowkleanScoringLogic:
         )
 
         if not chat_logs:
-            return 1.0
+            return 0.0
 
         # 轉成純文字對話
+        # 只取 User 講的話來做快篩即可，避免被 AI 的話干擾
+        user_texts = [log.text for log in chat_logs if log.role == "user"]
         full_dialogue = "\n".join([f"{log.role}: {log.text}" for log in chat_logs])
+        combined_user_text = " ".join(user_texts)
+
+        # ====================================================
+        # 第一道防線：Python 關鍵字快篩 (Hard Filter)
+        # ====================================================
+        # 定義此衛教模組的「必要關鍵字」，只要出現任一個，就視為「相關對話」
+        # 如果使用者整場只講「聖誕快樂」、「戴安全帽」，一定不會命中這些詞
+        relevant_keywords = [
+            "檢查",
+            "大腸鏡",
+            "無痛",
+            "一般",
+            "喝水",
+            "水分",
+            "飲食",
+            "低渣",
+            "無渣",
+            "吃藥",
+            "服用",
+            "藥粉",
+            "保可淨",
+            "樂可舒",
+            "藥丸",
+            "便秘",
+            "拉肚子",
+            "排便",
+            "顏色",
+            "清澈",
+            "黃色",
+            "禁水",
+            "不能喝",
+            "停藥",
+            "高血壓",
+            "糖尿病",
+            "抗凝血",
+            "阿斯匹靈",
+            "除了",
+            "問題",
+            "清楚",
+            "了解",
+        ]
+
+        # 檢查是否包含任一關鍵字
+        is_relevant = any(k in combined_user_text for k in relevant_keywords)
+
+        if not is_relevant:
+            logger.info(
+                f"[{session_id}] 組織效率(快篩): 未偵測到衛教關鍵字 -> 判定為無效對話 (0分)"
+            )
+            return 0.0
 
         # 2. 動態建構標準 SOP 順序
         steps = ["1. 飲食衛教 (低渣/無渣)"]
@@ -1051,36 +1280,49 @@ class ColonoscopyBowkleanScoringLogic:
 
         # 3. 撰寫 Prompt
         prompt = f"""
-        你是一個嚴格的衛教評分員。請檢視以下對話，判斷學員（user）的衛教順序是否符合標準 SOP。
+        你是一個嚴格的衛教評分員。請閱讀下方對話，將學員的表現分類到下列三個類別之一。
 
-        [標準衛教順序 SOP]:
+        [類別定義 - 請依序判斷]:
+        【類別 0】：無效或無關對話。
+             - 對話內容完全沒有提到「大腸鏡、飲食、吃藥、禁水」等衛教主題。
+             - 例如只說了：「你好」、「天氣不錯」、「記得戴安全帽」、「聖誕快樂」。
+             - 只要內容與醫療衛教無關，一律選此項。
+
+        【類別 1】：順序混亂或有缺漏。
+             - 有提到衛教內容，但順序錯誤（例如：先講禁水才講飲食）。
+             - 或者遺漏了重要步驟（例如：只講了吃藥，沒講飲食）。
+        
+        【類別 4】：順序正確且完整。
+             - 依照 SOP 順序進行：飲食 -> 吃藥 -> 禁水。
+             - 邏輯通順。
+
+        [標準 SOP]:
         {sop_text}
 
         [對話紀錄]:
         {full_dialogue}
 
-        [評分標準]:
-        請判斷學員的解說順序是否大致符合上述邏輯：
-        - 原則上應先講「飲食」，再講「吃瀉藥/喝藥水」，最後講「禁水」。
-        - 如果學員順序正確 (例如：先教怎麼吃低渣，才教怎麼泡藥)，請給 4 分。
-        - 如果順序嚴重顛倒 (例如：先講禁水，才突然想到要講低渣飲食；或是先教喝藥，最後才補講飲食)，請給 1 分。
-        - 只要邏輯通順，細節稍微穿插沒關係，重點是「飲食 -> 用藥 -> 禁水」的大架構要對。
-
         [你的判斷]:
-        請只輸出一個數字： "4" (順序正確) 或 "1" (順序混亂)。
+        請只輸出一個數字代號 ("0", "1", 或 "4")。
         """
 
         # 4. 呼叫 LLM
         # 使用 SCORING_MODEL_NAME (建議 gemma3:12b)
         response = await generate_llm_response(prompt, SCORING_MODEL_NAME)
 
-        # 5. 解析結果
+        # 解析結果
         if "4" in response:
-            logger.info(f"[{session_id}] 組織效率(LLM判定): 順序正確 (4分)")
+            logger.info(f"[{session_id}] 組織效率(LLM): 順序正確 (4分)")
             return 4.0
-        else:
+        elif "0" in response:
             logger.info(
-                f"[{session_id}] 組織效率(LLM判定): 順序混亂或嚴重錯誤 (1分). Response: {response}"
+                f"[{session_id}] 組織效率(LLM): 判定為無關對話 (0分). Response: {response}"
+            )
+            return 0.0
+        else:
+            # 預設落點為 1 分 (代表有講到一點相關的，但不好)
+            logger.info(
+                f"[{session_id}] 組織效率(LLM): 順序混亂 (1分). Response: {response}"
             )
             return 1.0
 
@@ -1472,14 +1714,17 @@ class ColonoscopyBowkleanScoringLogic:
         )
 
         # 5-2. 及時且適時
-        val_time = 0.5
+        val_time = 0.0
         duration_minutes = 0.0
+
         if chat_logs:
+            val_time = 0.5  # 只要有開口，至少給 0.5 分
             start_time = chat_logs[0].time
             end_time = chat_logs[-1].time
             duration_minutes = (end_time - start_time).total_seconds() / 60.0
             if 5 <= duration_minutes <= 9:
                 val_time = 1.5
+
         record_item(
             "5.組織效率",
             "時間控制",

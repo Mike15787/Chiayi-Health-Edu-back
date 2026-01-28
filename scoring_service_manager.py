@@ -8,8 +8,8 @@ from module_manager import ModuleManager # 引入新的 ModuleManager
 
 logger = logging.getLogger(__name__)
 
-#ScoringServiceManager是一個class 但他聚集了 
-# get_scoring_logic 取得指定模組的評分instance 
+# ScoringServiceManager是一個class 但他聚集了
+# get_scoring_logic 取得指定模組的評分instance
 # process_user_inputs_for_scoring 將評分任務委派給特定模組的評分邏輯。
 
 class ScoringServiceManager:
@@ -29,18 +29,18 @@ class ScoringServiceManager:
             self.active_scoring_logics[module_id] = self.module_manager.get_scoring_logic_instance(module_id)
         return self.active_scoring_logics[module_id]
 
-    async def process_user_inputs_for_scoring(self, session_id: str, module_id: str, chat_snippet: List[Dict], db: Session) -> List[str]:
+    async def process_user_inputs_for_scoring(self, session_id: str, module_id: str, chat_snippet: List[Dict], db: Session, chat_log_id: int = None) -> List[str]:
         """
         將評分任務委派給特定模組的評分邏輯。
         """
         scoring_logic = self._get_scoring_logic(module_id)
-        
+
         # 這將呼叫模組專屬的 process_user_inputs_for_scoring
         newly_passed_item_ids = await scoring_logic.process_user_inputs_for_scoring(
-            session_id, chat_snippet, db
+            session_id, chat_snippet, db, chat_log_id=chat_log_id
         )
         return newly_passed_item_ids
-    
+
     async def calculate_final_scores(self, session_id: str, module_id: str, db: Session) -> Dict[str, str]:
         """
         將「最終分數計算任務」委派給特定模組。
@@ -63,7 +63,7 @@ class ScoringServiceManager:
                 "humanitarian_score": "0.00",
                 "overall_clinical_skills_score": "0.00"
             }
-    
+
     async def get_detailed_scores(self, session_id: str, module_id: str, db: Session) -> Dict[str, Any]:
         """
         獲取指定模組的詳細評分結構。
@@ -77,7 +77,7 @@ class ScoringServiceManager:
         else:
             logger.warning(f"Module {module_id} does not implement get_detailed_scores. Returning empty details.")
             return {}
-    
+
     def get_scoring_criteria_map(self, module_id: str) -> Dict[str, Dict]:
         """獲取指定模組的評分標準映射"""
         return {item['id']: item for item in self._get_scoring_logic(module_id).criteria}
@@ -89,9 +89,7 @@ class ScoringServiceManager:
     def get_summary_generator(self, module_id: str) -> Any:
         """獲取指定模組的總結生成器函數"""
         return self.module_manager.get_summary_generator(module_id)
-    
+
     def get_org_efficiency_scorer(self, module_id: str) -> Any:
         """獲取指定模組的組織效率評分器函數"""
         return self.module_manager.get_org_efficiency_scorer(module_id)
-    
-    

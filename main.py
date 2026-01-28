@@ -147,7 +147,7 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "http://127.0.0.1:8080",
         "http://127.0.0.1:5173",
-        "https://3da8f686e88f.ngrok-free.app  ",
+        "https://d18c32198ebd.ngrok-free.app  ",
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -725,7 +725,11 @@ async def score_utterance_task(chat_log_id: int, session_id: str):
         # 呼叫評分服務，獲取新達成的評分項
         newly_passed_item_ids = (
             await scoring_service_manager.process_user_inputs_for_scoring(
-                session_id, module_id, recent_history, db_task
+                session_id,
+                module_id,
+                recent_history,
+                db_task,
+                chat_log_id=chat_log_id,
             )
         )
 
@@ -737,6 +741,7 @@ async def score_utterance_task(chat_log_id: int, session_id: str):
                     chat_log_id=chat_log_id,
                     scoring_item_id=item_id,
                     module_id=module_id,
+                    
                 )
                 # 使用 merge 避免因時序問題導致的重複寫入錯誤
                 db_task.merge(attribution_entry)
