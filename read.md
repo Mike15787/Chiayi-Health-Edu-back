@@ -1,8 +1,14 @@
+# 開啟虛擬環境 在實驗室電腦
+source venv/bin/activate
+
 執行步驟 現在要先設定環境變數 APIkey
 $env:GEMINI_API_KEY="api key"
 再來設置gemini 或 ollama
 $env:LLM_PROVIDER="gemini"
 $env:LLM_PROVIDER="ollama"
+
+如果要使用vllm
+python run.py --provider vllm
 
 由於有三個測試環境 
 初始化開發資料庫 (chatlog.db)
@@ -30,9 +36,14 @@ python run.py
 python run.py --env dev
 # 使用 chatlog.db
 
+如果要使用vllm
+python run.py --provider vllm
+python run.py --env dev --provider vllm
 ----------------------------------
 開放給藥師測試 (Ngrok)
 python run.py --env human
+如果要使用vllm
+python run.py --env human --provider vllm
 # 使用 human_test.db (此時 ngrok 連進來的對話都會存在這)
 ----------------------------------
 執行自動化評分測試
@@ -60,3 +71,9 @@ ngrok start --all
 streamlit 啟動方式
 用來視覺化整個測試過程
 streamlit run review_app.py
+
+vllm 啟動方式(僅限實驗室server)
+python -m vllm.entrypoints.openai.api_server \
+    --model google/gemma-3-4b-it \
+    --port 8243
+
