@@ -4,6 +4,8 @@ import json
 import logging
 import numpy as np
 import faiss
+import wave  # [新增] 用於讀取 wav 資訊
+import math  # [新增] 用於無條件進位
 from sentence_transformers import SentenceTransformer
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -44,7 +46,7 @@ CRITERIA_KEYWORDS = {
     # 泡藥相關：一定要提到 泡、攪、溶解、cc、CC、杯、毫升
     "med_mix_method_and_time.s1": ["泡","攪","溶","cc","CC","ml","杯","水","混","喝"],
     # 藥丸相關：一定要提到 藥丸、錠、顆、樂可舒、Dulcolax、粉紅
-    "med_mix_method_and_time.s2": ["藥丸","錠","顆","樂可舒","Dulcolax","粉紅","吃"],
+    "med_mix_method_and_time.s2": ["藥丸","錠","顆","樂可舒","Dulcolax","粉紅","吃",],
     # 確認本人：一定要提到 本人、自己、名字、您
     "confirm_self_use": ["本人", "自己", "名字", "您", "誰"],
     # 檢查型態：一定要提到 無痛、一般、麻醉、睡、費用、錢、4500、800
@@ -57,7 +59,12 @@ CRITERIA_KEYWORDS = {
     "hydration_and_goal.s2": ["水", "cc", "CC", "杯", "喝", "1000", "一千"],
     # 理想狀態：一定要提到 便、大號、廁所、顏色、黃、清、水
     "ideal_intestinal_condition": ["便", "廁所", "拉", "色", "黃", "清", "水", "渣"],
+    # 防止單純講飲食日期時誤觸發
+    "clinical_med_timing_1": ["藥", "包", "喝", "吃", "服用", "第一"],
+    "clinical_med_timing_2": ["藥","包","喝","吃","服用","第二","早上","凌晨","上午"],
 }
+
+AUDIO_DIR = "audio"
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +151,7 @@ class ColonoscopyBowkleanScoringLogic:
             relevant_ids.add("clinical_med_timing_2")
 
         logger.info(
-            f"Found relevant criteria IDs for module {MODULE_ID}: {list(relevant_ids)}"
+            f"找到可能的評分項目 {MODULE_ID}: {list(relevant_ids)}"
         )
         return list(relevant_ids)
 
@@ -175,7 +182,7 @@ class ColonoscopyBowkleanScoringLogic:
             db.add(log_entry)
 
             logger.info(
-                f"評分項目 '{item_id}' for module {MODULE_ID} with score {score}. Raw response: '{raw_response[:50]}...'"
+                f"評分項目 '{item_id}' 模組: {MODULE_ID} 分數: {score} 回應: '{raw_response[:50]}...'"
             )
             return score
         except Exception as e:
@@ -216,7 +223,7 @@ class ColonoscopyBowkleanScoringLogic:
         formatted_conversation_for_search = " ".join(user_messages)
 
         logger.info(
-            f"[{session_id}] Vector Search Query (Last 3 lines): {formatted_conversation_for_search.replace(chr(10), ' | ')}"
+            f"[{session_id}] 向量搜尋 (最新三句): {formatted_conversation_for_search.replace(chr(10), ' | ')}"
         )
 
         # 3. 執行搜尋 (使用縮減後的文字搜尋，保持 top_k=5)
@@ -496,6 +503,7 @@ class ColonoscopyBowkleanScoringLogic:
             [情境] 病人應該在檢查前一天 ({precomputed_data.prev_1d}) 的下午5點服用第一包藥。
             [學員回答]: {conversation_context}
             
+            忽略無關藥物(清腸劑/保可淨)的日期說明。這裡只檢查「藥物(清腸劑/保可淨)」的服用時間
             學員是否有清楚且正確地告知病人第一包藥的服用日期和時間？如果正確，只輸出 "1"。如果不正確，只輸出 "0"。
             """
         elif criterion["id"] == "clinical_med_timing_2":
@@ -504,6 +512,7 @@ class ColonoscopyBowkleanScoringLogic:
             [情境] 病人應該在檢查當天 ({precomputed_data.exam_day}) 的 {precomputed_data.second_dose_time} 服用第二包藥(保可淨)。
             [學員回答]: {conversation_context}
             
+            忽略無關藥物(清腸劑/保可淨)的日期說明。這裡只檢查「藥物(清腸劑/保可淨)」的服用時間
             學員是否有正確告知病人第二包藥的服用日期和時間？如果正確，只輸出 "1"。如果不正確，只輸出 "0"。
             """
         else:
@@ -925,10 +934,10 @@ class ColonoscopyBowkleanScoringLogic:
         item_id = criterion["id"]
 
         if item_id == "hydration_and_goal.s1":
-            correct_volume = "2000c.c.以上 (或 8 杯)"
+            correct_volume = "2000c.c.以上 (或 8 杯 250cc)"
             correct_timing_concept = "2-3小時內陸續分次喝完"
         elif item_id == "hydration_and_goal.s2":
-            correct_volume = "1000c.c. (或 4 杯)"
+            correct_volume = "1000c.c. (或 4 杯 250cc)"
             correct_timing_concept = "1小時內陸續分次喝完"
         else:
             logger.error(f"Unknown hydration criteria ID: {item_id}")
@@ -936,12 +945,18 @@ class ColonoscopyBowkleanScoringLogic:
 
         prompt = f"""
         你是一位藥師，請檢查學員對於「水分補充」的衛教是否正確且完整。
+        
         [正確標準]: 
         1. 總水量約 {correct_volume}。
         2. 需要「分次」喝完 (例如：{correct_timing_concept})，不可牛飲。
         [對話紀錄]: {conversation_context}
-        學員是否提到了「{correct_volume}」以及「分次喝/慢慢喝」這兩個關鍵概念？
-        符合輸出 "1"，不符合或未提及輸出 "0"。
+        
+        注意事項
+        1.學員是否提到了「{correct_volume}」以及「分次喝/慢慢喝」這兩個關鍵概念？
+        2.學員在教泡藥(保可淨)時，會提到「用 150c.c. 的水泡開藥粉」。
+          *請注意：這 150c.c. 絕對不算在補充水分內！*
+          如果學員只說了「用150cc水泡藥」，但沒有提到後續要喝 {correct_volume}的水，請務輸出 "0"
+        符合輸出 "1"，不符合或未提及輸出 "0" 不要輸出除了數字以外的文字
         """
         return await self._call_llm_and_log(
             session_id, item_id, prompt, SCORING_MODEL_NAME, db, chat_log_id=chat_log_id
@@ -1437,6 +1452,56 @@ class ColonoscopyBowkleanScoringLogic:
             )
             return 1.0
 
+    # [新增] 輔助函式：計算單一音檔秒數
+    def _get_audio_duration(self, filename: str) -> float:
+        """讀取 wav 檔案並返回秒數，若讀取失敗則回傳 0"""
+        if not filename:
+            return 0.0
+
+        file_path = os.path.join(AUDIO_DIR, filename)
+        if not os.path.exists(file_path):
+            logger.warning(f"Audio file not found: {file_path}")
+            return 0.0
+
+        try:
+            with wave.open(file_path, "r") as f:
+                frames = f.getnframes()
+                rate = f.getframerate()
+                duration = frames / float(rate)
+                return duration
+        except Exception as e:
+            logger.warning(f"Error reading audio duration for {filename}: {e}")
+            return 0.0
+
+    # [新增] 輔助函式：計算 Session 總衛教時間 (新公式)
+    def _calculate_total_session_time(self, chat_logs: List[ChatLog]) -> float:
+        """
+        計算邏輯：
+        1. 累加 user 和 patient(AI) 的音檔總長度。
+        2. 加上 (音檔數量 / 1.25) 秒作為緩衝 (模擬思考與換氣時間)。
+        3. 回傳單位為「分鐘」。
+        """
+        total_audio_seconds = 0.0
+        audio_count = 0
+
+        for log in chat_logs:
+            if log.audio_filename:
+                duration = self._get_audio_duration(log.audio_filename)
+                total_audio_seconds += duration
+                audio_count += 1
+
+        # 公式：總音檔時間 + (總數量 / 1.25) 取整數
+        buffer_seconds = int(audio_count / 1.25)
+        final_total_seconds = total_audio_seconds + buffer_seconds
+
+        # 轉為分鐘
+        duration_minutes = final_total_seconds / 60.0
+
+        logger.info(
+            f"Time Calc: AudioSecs={total_audio_seconds:.2f}, Count={audio_count}, Buffer={buffer_seconds}, TotalMin={duration_minutes:.2f}"
+        )
+        return duration_minutes
+
     # --- 新增：最終分數計算邏輯 ---
     # scenarios/colonoscopy_bowklean/scoring_logic.py
 
@@ -1823,11 +1888,12 @@ class ColonoscopyBowkleanScoringLogic:
         duration_minutes = 0.0
 
         if chat_logs:
+            # 改用音檔計算邏輯
+            duration_minutes = self._calculate_total_session_time(chat_logs)
+
             val_time = 0.5  # 只要有開口，至少給 0.5 分
-            start_time = chat_logs[0].time
-            end_time = chat_logs[-1].time
-            duration_minutes = (end_time - start_time).total_seconds() / 60.0
-            if 5 <= duration_minutes <= 9:
+            # 設定標準：5 到 9 分鐘為滿分 (此標準可依需求調整)
+            if 5.0 <= duration_minutes <= 9.0:
                 val_time = 1.5
 
         record_item(
@@ -2280,12 +2346,13 @@ class ColonoscopyBowkleanScoringLogic:
             .order_by(ChatLog.time.asc())
             .all()
         )
-        duration_minutes = 0
+        duration_minutes = 0.0
         if chat_logs_q:
-            duration_minutes = (
-                chat_logs_q[-1].time - chat_logs_q[0].time
-            ).total_seconds() / 60.0
-        val_time = 1.5 if (5 <= duration_minutes <= 9) else 0.5
+            # 改用音檔計算邏輯
+            duration_minutes = self._calculate_total_session_time(chat_logs_q)
+
+        val_time = 1.5 if (5.0 <= duration_minutes <= 9.0) else 0.5
+
         grouped_details["組織效率"]["items"].append(
             {
                 "item_id": "logic_time",
@@ -2293,7 +2360,7 @@ class ColonoscopyBowkleanScoringLogic:
                 "description": f"總衛教時間：{duration_minutes:.1f} 分鐘 (目標 5-9 分鐘)",
                 "weight": 1.5,
                 "user_score": val_time,
-                "scoring_type": "Time Logic",
+                "scoring_type": "Time Logic (Audio Based)",
                 "relevant_dialogues": [],
             }
         )

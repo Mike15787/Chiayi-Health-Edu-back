@@ -148,7 +148,7 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "http://127.0.0.1:8080",
         "http://127.0.0.1:5173",
-        "https://14abc7686943.ngrok-free.app",
+        "https://72a34b5dfb10.ngrok-free.app",
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
