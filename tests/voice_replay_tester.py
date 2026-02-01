@@ -437,8 +437,8 @@ async def run_voice_replay_test(target_session_ids: list):
 if __name__ == "__main__":
     # 目標 Session IDs
     target_sessions = [
-        "session_1769303919499_tgpqudkp2",
-        "session_1769305390196_txyscuj5a",
+        "session_1769778247208_vrfujzuml",
+        "session_1769774994631_copzyqvas",
     ]
 
     print(f"🚀 啟動語音回放測試 (Voice Replay Tester)")

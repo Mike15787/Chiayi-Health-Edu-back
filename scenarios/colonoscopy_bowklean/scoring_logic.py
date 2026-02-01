@@ -35,6 +35,30 @@ from scenarios.colonoscopy_bowklean.summary_logic import (
     calculate_organization_efficiency_score_llm,
 )
 
+CRITERIA_KEYWORDS = {
+    # 禁水相關：一定要提到 水、喝、小時、禁
+    "npo_mention": ["水", "禁", "喝", "小時", "不能", "渴"],
+    "clinical_npo_timing": ["水", "禁", "喝", "點", "時"],
+    # 飲食相關：一定要提到 吃、渣、纖維、菜、奶、肉、飲食
+    "diet_basic": ["吃", "渣", "菜", "奶", "肉", "飲食", "纖維", "水果", "湯"],
+    # 泡藥相關：一定要提到 泡、攪、溶解、cc、CC、杯、毫升
+    "med_mix_method_and_time.s1": ["泡","攪","溶","cc","CC","ml","杯","水","混","喝"],
+    # 藥丸相關：一定要提到 藥丸、錠、顆、樂可舒、Dulcolax、粉紅
+    "med_mix_method_and_time.s2": ["藥丸","錠","顆","樂可舒","Dulcolax","粉紅","吃"],
+    # 確認本人：一定要提到 本人、自己、名字、您
+    "confirm_self_use": ["本人", "自己", "名字", "您", "誰"],
+    # 檢查型態：一定要提到 無痛、一般、麻醉、睡、費用、錢、4500、800
+    "proper_guidance_s2": ["無痛", "一般", "麻醉", "睡", "費", "錢"],
+    "proper_guidance_s3": ["無痛", "一般", "麻醉", "睡", "費", "錢", "4500", "800"],
+    # 檢查時間：一定要提到 幾點、什麼時候、日期、號、時間
+    "proper_guidance_s4": ["點", "時", "號", "日", "哪天"],
+    # 水分補充：一定要提到 水、cc、杯、喝
+    "hydration_and_goal.s1": ["水", "cc", "CC", "杯", "喝", "2000", "兩千"],
+    "hydration_and_goal.s2": ["水", "cc", "CC", "杯", "喝", "1000", "一千"],
+    # 理想狀態：一定要提到 便、大號、廁所、顏色、黃、清、水
+    "ideal_intestinal_condition": ["便", "廁所", "拉", "色", "黃", "清", "水", "渣"],
+}
+
 logger = logging.getLogger(__name__)
 
 
@@ -95,7 +119,19 @@ class ColonoscopyBowkleanScoringLogic:
         for j, idx in enumerate(I[0]):
             score = distances[0][j]
             if idx != -1 and score > SIMILARITY_THRESHOLD:
-                relevant_ids.add(self.criteria_id_list[idx])
+                c_id = self.criteria_id_list[idx]
+
+                # --- [方案 B 修改] 關鍵字硬過濾 (Keyword Filter) ---
+                if c_id in CRITERIA_KEYWORDS:
+                    required_kws = CRITERIA_KEYWORDS[c_id]
+                    # 如果使用者輸入中，連一個關鍵字都沒出現，就直接略過
+                    if not any(k in user_input for k in required_kws):
+                        logger.debug(
+                            f"[{c_id}] 向量命中(score={score:.2f})但關鍵字不符，忽略。"
+                        )
+                        continue
+
+                relevant_ids.add(c_id)
 
         # --- [修改 1] 強制觸發邏輯 ---
         # 如果 "說明保可淨使用方式" (s1) 被觸發，則強制加入 "臨床判斷-服藥時間" (1 & 2)
@@ -170,10 +206,14 @@ class ColonoscopyBowkleanScoringLogic:
         # 1. 準備給 LLM 評分的完整上下文 (保持完整，讓 LLM 看得懂前因後果)
         formatted_conversation_for_llm = format_snippet(chat_snippet)
 
-        # 2. [修改重點] 準備給向量搜尋用的文字 (只取最後 3 句)
-        # 這樣可以讓搜尋更聚焦在當下話題，減少舊話題的干擾
-        search_snippet = chat_snippet[-3:]
-        formatted_conversation_for_search = format_snippet(search_snippet)
+        user_messages = [item['message'] for item in chat_snippet[-3:] if item['role']=='user']
+
+        if not user_messages:
+            logger.debug(f"[{session_id}] Skip search: No user messages in snippet.")
+            return []
+
+        # 將學員的訊息串接起來，不包含 "學員:" 標籤，純文字搜尋最準
+        formatted_conversation_for_search = " ".join(user_messages)
 
         logger.info(
             f"[{session_id}] Vector Search Query (Last 3 lines): {formatted_conversation_for_search.replace(chr(10), ' | ')}"
@@ -330,6 +370,10 @@ class ColonoscopyBowkleanScoringLogic:
                 score = await self._check_proper_guidance_s3(
                     session_id, conversation_context, criterion, db, chat_log_id
                 )
+            elif item_type == "bowklean_onset_time":
+                score = await self._check_bowklean_onset_time(
+                    session_id, conversation_context, criterion, db, chat_log_id
+                )
             else:  # 對於未定義的類型，使用基礎 RAG 邏輯
                 score = await self._check_rag_basic(
                     session_id, conversation_context, criterion, db, chat_log_id
@@ -456,11 +500,11 @@ class ColonoscopyBowkleanScoringLogic:
             """
         elif criterion["id"] == "clinical_med_timing_2":
             prompt = f"""
-            你是一個資深護理師，請判斷學員的衛教內容是否正確。
-            [情境] 病人應該在檢查當天 ({precomputed_data.exam_day}) 的 {precomputed_data.second_dose_time} 服用第二包藥。
+            請判斷學員的衛教內容是否正確，只要學員有回答出情境中的內容就正確，重點在服用時間有沒有對上，早上、上午和凌晨是一樣的意思
+            [情境] 病人應該在檢查當天 ({precomputed_data.exam_day}) 的 {precomputed_data.second_dose_time} 服用第二包藥(保可淨)。
             [學員回答]: {conversation_context}
             
-            學員是否有清楚且正確地告知病人第二包藥的服用日期和時間？如果正確，只輸出 "1"。如果不正確，只輸出 "0"。
+            學員是否有正確告知病人第二包藥的服用日期和時間？如果正確，只輸出 "1"。如果不正確，只輸出 "0"。
             """
         else:
             return 0
@@ -984,7 +1028,7 @@ class ColonoscopyBowkleanScoringLogic:
     ) -> int:
         """
         單純檢查學員是否有提到「禁水」這個動作 (RAG_explain_npo)。
-        註：不同於 RAG_confirm_npo (那是檢查時間點計算是否正確)，這裡只檢查有無衛教病人「要禁水」。
+        [雙向綁定]: 如果這裡通過，clinical_npo_timing 也會自動給分。
         """
         prompt = f"""
         請檢查學員是否有告知病人檢查前需要「禁水」(不能喝水)。
@@ -999,7 +1043,7 @@ class ColonoscopyBowkleanScoringLogic:
         有提到禁水 -> 輸出 "1"
         完全沒提到 -> 輸出 "0"
         """
-        return await self._call_llm_and_log(
+        score = await self._call_llm_and_log(
             session_id,
             criterion["id"],
             prompt,
@@ -1007,6 +1051,28 @@ class ColonoscopyBowkleanScoringLogic:
             db,
             chat_log_id=chat_log_id,
         )
+
+        # [雙向綁定邏輯 B]：如果有提到禁水，連同「臨床判斷-禁水時間」一起給分
+        if score == 1:
+            logger.info(
+                f"[{session_id}] npo_mention passed, auto-scoring clinical_npo_timing."
+            )
+            try:
+                stmt = sqlite_insert(AnswerLog).values(
+                    session_id=session_id,
+                    module_id=MODULE_ID,
+                    scoring_item_id="clinical_npo_timing",  # 連動項目
+                    score=1,
+                    created_at=datetime.now(),
+                )
+                on_conflict_stmt = stmt.on_conflict_do_update(
+                    index_elements=["session_id", "scoring_item_id"], set_=dict(score=1)
+                )
+                db.execute(on_conflict_stmt)
+            except Exception as e:
+                logger.error(f"Failed to auto-score 'clinical_npo_timing': {e}")
+
+        return score
 
     async def _check_satisfy_info_global(
         self,
@@ -1091,6 +1157,51 @@ class ColonoscopyBowkleanScoringLogic:
                 logger.error(f"Failed to update AnswerLog in global check: {e}")
 
         return score
+
+    async def _check_bowklean_onset_time(
+        self,
+        session_id: str,
+        conversation_context: str,
+        criterion: dict,
+        db: Session,
+        chat_log_id: int = None,
+    ) -> int:
+        """
+        [Type: bowklean_onset_time]
+        檢查藥物作用時間。
+        重點：
+        1. 正確時間約為服藥後 2-3 小時 (或至少1小時以上)。
+        2. 嚴格禁止說「馬上」、「立刻」、「吃完就拉」，這屬於錯誤醫療常識，必須給 0 分。
+        """
+        prompt = f"""
+        你是一位資深臨床藥師。請判斷學員對於「保可淨(Bowklean)藥物作用時間」的衛教是否正確且安全。
+
+        [正確的醫療知識]:
+        保可淨藥物作用較溫和，服用後通常需要等待 **2到3小時** 才會開始出現腹瀉反應 (最快也要1小時)。
+
+        [常見的錯誤觀念 (必須判為 0 分)]:
+        ❌ 絕對不能說「吃完馬上」、「立刻」、「幾分鐘內」就會開始拉肚子。這是錯誤的資訊。
+
+        [學員與病人的對話紀錄]:
+        ---
+        {conversation_context}
+        ---
+
+        [你的判斷任務]:
+        1. 如果學員有提到 **「2-3小時」**、**「1-2小時」** 或 **「稍後/晚一點」** 才會開始作用 -> 請輸出 "1"。
+        2. 如果學員說 **「馬上」**、**「立刻」**、**「吃下去就會拉」** -> 請務必輸出 "0" (因為這是錯誤衛教)。
+        3. 如果完全沒提到時間 -> 請輸出 "0"。
+
+        請只輸出 "1" 或 "0"。
+        """
+        return await self._call_llm_and_log(
+            session_id,
+            criterion["id"],
+            prompt,
+            SCORING_MODEL_NAME,
+            db,
+            chat_log_id=chat_log_id,
+        )
 
     ''' 舊的 透過時間戳記來評分組織效率 不太穩定
     def _check_organization_sequence_by_time(
@@ -1652,14 +1763,11 @@ class ColonoscopyBowkleanScoringLogic:
         # ==========================================
 
         # 4-1. 表現尊重
-        has_respect_basis = val_hello > 0 and val_sit > 0 and pg_s1 > 0
-        score_respect = 0.0
-        if has_respect_basis:
-            score_respect = 2.0 if is_case_A2 else 3.0
+        score_respect = val_hello + val_sit + pg_s1
         record_item(
             "4.人道專業",
             "表現尊重",
-            has_respect_basis,
+            score_respect > 0,
             score_respect,
             "邏輯: 問好+請坐+引導",
         )
@@ -1671,14 +1779,11 @@ class ColonoscopyBowkleanScoringLogic:
         record_item("4.人道專業", "需求滿足(確認理解)", p_satisfy, val_satisfy)
 
         # 4-3. 同理心
-        has_empathy_basis = val_no_term > 0 and val_ask_exp > 0
-        score_empathy = 0.0
-        if has_empathy_basis:
-            score_empathy = 1.0 if is_case_A2 else 2.0
+        score_empathy = val_no_term + val_ask_exp
         record_item(
             "4.人道專業",
             "同理心",
-            has_empathy_basis,
+            score_empathy > 0,
             score_empathy,
             "邏輯: 無術語+問經驗",
         )
@@ -2114,36 +2219,38 @@ class ColonoscopyBowkleanScoringLogic:
             )
 
         # --- 2. 人道專業 (Logic Formulas) ---
+        w_hello = 0.5 if is_case_A2 else 1.0
+        w_sit = 0.5 if is_case_A2 else 1.0
+        w_pg1 = 1.0
+
         # 表現尊重
-        val_hello = is_passed("greeting_hello")
-        val_sit = is_passed("invite_to_sit")
-        pg_s1 = is_passed("proper_guidance_s1")
-        has_respect = val_hello > 0 and val_sit > 0 and pg_s1 > 0
-        respect_w = 2.0 if is_case_A2 else 3.0
+        s_hello = w_hello if is_passed("greeting_hello") else 0.0
+        s_sit = w_sit if is_passed("invite_to_sit") else 0.0
+        s_pg1 = w_pg1 if is_passed("proper_guidance_s1") else 0.0
+        final_respect_score = s_hello + s_sit + s_pg1
         grouped_details["人道專業"]["items"].append(
             {
                 "item_id": "logic_respect",
                 "item_name": "表現尊重",
                 "description": "同時達成：問好、請坐、引導衛教",
-                "weight": respect_w,
-                "user_score": respect_w if has_respect else 0.0,
+                "weight": w_hello + w_sit + w_pg1,
+                "user_score": final_respect_score,
                 "scoring_type": "Logic Formula",
                 "relevant_dialogues": [],
             }
         )
 
         # 同理心
-        val_no_term = is_passed("no_use_term")
-        val_ask_exp = is_passed("review_med_history_1")
-        has_empathy = val_no_term > 0 and val_ask_exp > 0
-        empathy_w = 1.0 if is_case_A2 else 2.0
+        s_no_term = 1.0 if is_passed("no_use_term") else 0.0
+        s_ask_exp = 1.0 if is_passed("review_med_history_1") else 0.0
+        final_empathy_score = s_no_term + s_ask_exp
         grouped_details["人道專業"]["items"].append(
             {
                 "item_id": "logic_empathy",
                 "item_name": "同理心(感同身受)",
                 "description": "同時達成：無專業術語、詢問過往經驗",
-                "weight": empathy_w,
-                "user_score": empathy_w if has_empathy else 0.0,
+                "weight": 2.0,
+                "user_score": final_empathy_score,
                 "scoring_type": "Logic Formula",
                 "relevant_dialogues": [],
             }
