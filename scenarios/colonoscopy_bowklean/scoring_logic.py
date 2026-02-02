@@ -44,9 +44,9 @@ CRITERIA_KEYWORDS = {
     # 飲食相關：一定要提到 吃、渣、纖維、菜、奶、肉、飲食
     "diet_basic": ["吃", "渣", "菜", "奶", "肉", "飲食", "纖維", "水果", "湯"],
     # 泡藥相關：一定要提到 泡、攪、溶解、cc、CC、杯、毫升
-    "med_mix_method_and_time.s1": ["泡","攪","溶","cc","CC","ml","杯","水","混","喝"],
+    "bowklean_mix_method": ["泡","攪","溶","cc","CC","ml","杯","水","混","喝"],
     # 藥丸相關：一定要提到 藥丸、錠、顆、樂可舒、Dulcolax、粉紅
-    "med_mix_method_and_time.s2": ["藥丸","錠","顆","樂可舒","Dulcolax","粉紅","吃",],
+    "dulcolax_method_and_time": ["藥丸","錠","顆","樂可舒","Dulcolax","粉紅","吃",],
     # 確認本人：一定要提到 本人、自己、名字、您
     "confirm_self_use": ["本人", "自己", "名字", "您", "誰"],
     # 檢查型態：一定要提到 無痛、一般、麻醉、睡、費用、錢、4500、800
@@ -143,9 +143,9 @@ class ColonoscopyBowkleanScoringLogic:
         # --- [修改 1] 強制觸發邏輯 ---
         # 如果 "說明保可淨使用方式" (s1) 被觸發，則強制加入 "臨床判斷-服藥時間" (1 & 2)
         # 因為這通常是在說明泡法的時候會一起講到時間，但向量可能只抓到泡法
-        if "med_mix_method_and_time.s1" in relevant_ids:
+        if "bowklean_mix_method" in relevant_ids:
             logger.info(
-                f"[{MODULE_ID}] 搜尋到 'med_mix_method_and_time.s1', 強制檢查clinical_med_timing"
+                f"[{MODULE_ID}] 搜尋到 'bowklean_mix_method', 強制檢查clinical_med_timing"
             )
             relevant_ids.add("clinical_med_timing_1")
             relevant_ids.add("clinical_med_timing_2")
@@ -354,9 +354,9 @@ class ColonoscopyBowkleanScoringLogic:
                 score = await self._check_med_mix_method(
                     session_id, conversation_context, criterion, db, chat_log_id
                 )
-            elif item_type == "first_med_mix_time":
+            elif item_type == "dulcolax_method_and_time":
                 # 對應: 說明樂可舒使用方式 (錠劑時間)
-                score = await self._check_first_med_mix_time(
+                score = await self._check_dulcolax_method_and_time(
                     session_id, conversation_context, criterion, db, chat_log_id
                 )
             elif item_type == "hydration_method":
@@ -717,25 +717,32 @@ class ColonoscopyBowkleanScoringLogic:
             )
             return 0
         prompt = f"""
-        你是一個資深護理師，請判斷學員的衛教內容是否正確。
+        你是一個資深護理師，請判斷學員的「飲食衛教」內容是否正確。
 
-        [正確的飲食時程表]:
-        - 檢查前三天 ({precomputed_data.prev_3d})：低渣飲食
-        - 檢查前兩天 ({precomputed_data.prev_2d})：低渣飲食
-        - 檢查前一天 ({precomputed_data.prev_1d})：無渣流質飲食 (如運動飲料、清湯)
+        [正確的飲食時程與內容標準]:
+        1. **低渣飲食**：
+           - 時間：檢查前三天 ({precomputed_data.prev_3d}) 及 前兩天 ({precomputed_data.prev_2d})。
+           - 內容：減少糞便體積。
+           - 禁止：**蔬菜、水果**、高纖維食物、**奶類/乳製品**(牛奶、起司)、堅果。
+           - 可食：白飯、白麵條、去皮魚肉、豆腐、蛋。
+
+        2. **無渣流質飲食 (清流質)**：
+           - 時間：檢查前一天 ({precomputed_data.prev_1d})。
+           - 內容：完全無固體，可透光的液體。
+           - 禁止：**牛奶/豆漿** (不透明)、濃湯、固體食物。
+           - 可食：運動飲料 (舒跑/寶礦力)、無渣菜湯/魚湯/肉湯、蜂蜜水、冬瓜茶、開水。
 
         [學員回答]: 
         {conversation_context}
         
         [評分標準]:
-        請判斷學員是否正確說明了上述兩個階段的飲食原則（低渣 vs 無渣流質）。
+        請判斷學員是否正確說明了上述兩個階段的「時間點」以及「飲食原則」。
         
-        [寬容度說明]:
-        1. 學員可以使用「具體日期」(如{precomputed_data.prev_3d})。
-        2. 學員也可以使用「相對日期」(如 "檢查前三天"、"前兩天"、"明天/後天")。
-        3. 只要學員講出的邏輯符合上述時程表，就請給分。
+        - 必須區分「前三天/前兩天是低渣」與「前一天是無渣流質」。
+        - 若學員提到「不能吃青菜水果」、「不能喝牛奶」，這是正確的低渣/無渣觀念，請給予肯定。
+        - 只要邏輯正確（時間階段對，且飲食內容大致符合標準），即可給分。
 
-        如果飲食觀念與時程正確，只輸出 "1"。如果不正確，只輸出 "0"。
+        如果飲食觀念與時程正確，只輸出 "1"。如果不正確或未提及，只輸出 "0"。
         """
         return await self._call_llm_and_log(
             session_id,
@@ -789,7 +796,7 @@ class ColonoscopyBowkleanScoringLogic:
             chat_log_id=chat_log_id,
         )
 
-    async def _check_first_med_mix_time(
+    async def _check_dulcolax_method_and_time(
         self,
         session_id: str,
         conversation_context: str,
@@ -1227,8 +1234,8 @@ class ColonoscopyBowkleanScoringLogic:
 
         標準順序 (類別代號)：
         1. 飲食衛教 (diet_basic)
-        2. 口服瀉藥錠劑 (med_mix_method_and_time.s2) -> 僅在 has_dulcolax=True 時檢查
-        3. 清腸粉劑 (med_mix_method_and_time.s1)
+        2. 口服瀉藥錠劑 (dulcolax_method_and_time) -> 僅在 has_dulcolax=True 時檢查
+        3. 清腸粉劑 (bowklean_mix_method)
         4. 禁水時間 (npo_mention)
         5. 其他用藥 (specify_special_meds) -> 僅在 has_special_meds=True 時檢查
 
@@ -1238,10 +1245,10 @@ class ColonoscopyBowkleanScoringLogic:
         """
 
         # 1. 定義要檢查的項目 ID
-        target_items = ["diet_basic", "med_mix_method_and_time.s1", "npo_mention"]
+        target_items = ["diet_basic", "bowklean_mix_method", "npo_mention"]
 
         if has_dulcolax:
-            target_items.append("med_mix_method_and_time.s2")
+            target_items.append("dulcolax_method_and_time")
 
         if has_special_meds:
             target_items.append("specify_special_meds")
@@ -1276,7 +1283,7 @@ class ColonoscopyBowkleanScoringLogic:
         # 順序：Diet -> [Tablet] -> Powder -> NPO -> [Special]
 
         t_diet = passed_times["diet_basic"]
-        t_powder = passed_times["med_mix_method_and_time.s1"]
+        t_powder = passed_times["bowklean_mix_method"]
         t_npo = passed_times["npo_mention"]
 
         # 基礎檢查: 飲食 -> 粉劑 -> 禁水
@@ -1289,7 +1296,7 @@ class ColonoscopyBowkleanScoringLogic:
         # 若有錠劑 (Dulcolax)，順序應為: 飲食 -> 錠劑 -> 粉劑
         # (通常錠劑是中午吃，粉劑是下午/晚上喝，故衛教順序通常先講錠劑)
         if has_dulcolax:
-            t_tablet = passed_times["med_mix_method_and_time.s2"]
+            t_tablet = passed_times["dulcolax_method_and_time"]
             if not (t_diet < t_tablet < t_powder):
                 logger.info(f"[{session_id}] 組織效率扣分: 錠劑順序錯誤")
                 return 1.0
@@ -1732,7 +1739,7 @@ class ColonoscopyBowkleanScoringLogic:
         pass_note_phrase = is_passed("note_have_med_time")
         pass_time1 = is_passed("clinical_med_timing_1")
         pass_time2 = is_passed("clinical_med_timing_2")
-        pass_s2 = is_passed("med_mix_method_and_time.s2")
+        pass_s2 = is_passed("dulcolax_method_and_time")
 
         logic_met = pass_time1 and pass_time2
         if has_dulcolax:
@@ -1749,21 +1756,25 @@ class ColonoscopyBowkleanScoringLogic:
         # 3-3. 藥物使用時機及方式
         val_med_method = 0.0
         if has_dulcolax:
-            p_m_s1 = is_passed("med_mix_method_and_time.s1")
-            p_m_s2 = is_passed("med_mix_method_and_time.s2")
+            p_m_s1 = is_passed("bowklean_mix_method")
+            p_m_s2 = is_passed("dulcolax_method_and_time")
             val_med_method = (p_m_s1 * 1.0) + (p_m_s2 * 1.0)
             record_item(
-                "3.諮商衛教", "藥物方法(保可淨)", p_m_s1, p_m_s1 * 1.0, "組合F: 佔1分"
+                "3.諮商衛教", "藥物方法(保可淨)", p_m_s1, p_m_s1 * 0.5, "組合F: 佔0.5分"
             )
             record_item(
-                "3.諮商衛教", "藥物方法(樂可舒)", p_m_s2, p_m_s2 * 1.0, "組合F: 佔1分"
+                "3.諮商衛教", "藥物方法(樂可舒)", p_m_s2, p_m_s2 * 0.5, "組合F: 佔0.5分"
             )
         else:
-            p_m_s1 = is_passed("med_mix_method_and_time.s1")
-            val_med_method = p_m_s1 * 2.0
+            p_m_s1 = is_passed("bowklean_mix_method")
+            val_med_method = p_m_s1
             record_item(
                 "3.諮商衛教", "藥物方法(保可淨)", p_m_s1, val_med_method, "組合E: 佔2分"
             )
+
+        pass_time1 = is_passed("clinical_med_timing_1")  # 第一包時間
+        pass_time2 = is_passed("clinical_med_timing_2")  # 第二包時間
+        val_med_method = val_med_method + pass_time1*0.5 + pass_time2*0.5
 
         # 3-4. 水分補充
         p_hydro = is_passed("hydration_and_goal.s1") or is_passed(
@@ -2133,6 +2144,13 @@ class ColonoscopyBowkleanScoringLogic:
             "proper_guidance_s5",
         ]
 
+        # [新增] 需要手動處理顯示的項目，先在迴圈中跳過，稍後手動加入
+        manual_display_items = [
+            "bowklean_mix_method",  # 保可淨泡法 (合併用)
+            "clinical_med_timing_1",  # 第一包時間 (合併用)
+            "clinical_med_timing_2",  # 第二包時間 (合併用)
+        ]
+
         for criterion in self.criteria:
             item_id = criterion["id"]
             category = criterion.get("category", "其他")
@@ -2141,6 +2159,8 @@ class ColonoscopyBowkleanScoringLogic:
             if item_id in proper_guidance_ids:
                 continue
 
+            if item_id in manual_display_items:
+                continue  # 跳過手動處理項
             # --- [修改重點 1] 過濾「說明藥物開立目的」 ---
             # 邏輯：組合一 (has_dulcolax=False) -> 顯示 s1
             #       組合二 (has_dulcolax=True)  -> 顯示 s2
@@ -2151,7 +2171,7 @@ class ColonoscopyBowkleanScoringLogic:
 
             # --- [修改重點 2] 過濾「說明樂可舒使用方式」 ---
             # 邏輯：組合一沒有樂可舒，直接隱藏 s2
-            if item_id == "med_mix_method_and_time.s2" and not has_dulcolax:
+            if item_id == "dulcolax_method_and_time" and not has_dulcolax:
                 continue
 
             # --- [修改重點 3] 過濾「水分補充」 (如果 s1/s2 也是對應不同組合的話) ---
@@ -2171,7 +2191,7 @@ class ColonoscopyBowkleanScoringLogic:
             final_weight = base_weight
             final_score = 0.0
 
-            if item_id == "med_mix_method_and_time.s1":
+            if item_id == "bowklean_mix_method":
                 # 說明保可淨使用方式
                 # 組合二 (有樂可舒): 保可淨佔 1 分 (因為樂可舒 s2 也會出現佔 1 分)
                 # 組合一 (無樂可舒): 保可淨佔 2 分
@@ -2186,7 +2206,7 @@ class ColonoscopyBowkleanScoringLogic:
             elif item_id == "satisfy_patient_infomation":
                 final_weight = 4.0 if is_case_A2 else 3.0
                 final_score = final_weight if score_val else 0
-            elif item_id == "med_mix_method_and_time.s1":
+            elif item_id == "bowklean_mix_method":
                 final_weight = 1.0 if has_dulcolax else 2.0
                 final_score = final_weight if score_val else 0
             else:
@@ -2257,6 +2277,57 @@ class ColonoscopyBowkleanScoringLogic:
         # B. 注入邏輯計算項目 (Logic/Computed Items)
         # 這是此模組特有的，如果是別的教案，會有完全不同的實作
         # ====================================================
+
+        # --- 1. 組合「說明藥物使用時機及方式」 (取代原本的保可淨泡法) ---
+        p_m_s1 = is_passed("bowklean_mix_method")  # 保可淨泡法 (1分)
+        p_t1 = is_passed("clinical_med_timing_1")  # 第一包時間 (0.5分)
+        p_t2 = is_passed("clinical_med_timing_2")  # 第二包時間 (0.5分)
+
+        # 計算總分 (滿分2分)
+        med_usage_total_score = (p_m_s1 * 1.0) + (p_t1 * 0.5) + (p_t2 * 0.5)
+
+        # 組合描述文字
+        med_usage_desc = (
+            f"• 保可淨泡製方式(1分): {'✅' if p_m_s1 else '❌'}\n"
+            f"• 第一包服用時間(0.5分): {'✅' if p_t1 else '❌'}\n"
+            f"• 第二包服用時間(0.5分): {'✅' if p_t2 else '❌'}"
+        )
+
+        # 組合相關對話
+        med_usage_dialogues = (
+            dialogue_map.get("bowklean_mix_method", [])
+            + dialogue_map.get("clinical_med_timing_1", [])
+            + dialogue_map.get("clinical_med_timing_2", [])
+        )
+
+        grouped_details["諮商衛教"]["items"].append(
+            {
+                "item_id": "med_usage_combined",
+                "item_name": "說明藥物使用時機及方式",  # 這是新標題
+                "description": med_usage_desc,
+                "weight": 2.0,
+                "user_score": float(med_usage_total_score),
+                "scoring_type": "Composite Logic",
+                "relevant_dialogues": list(set(med_usage_dialogues)),
+            }
+        )
+
+        # --- 2. 新增「確認是否進行無痛麻醉」 (補回缺失項目) ---
+        # 邏輯同醫療面談的 s2/s3 (s23_score)，但在此處佔1分
+        pain_check_dialogues = dialogue_map.get(
+            "proper_guidance_s2", []
+        ) + dialogue_map.get("proper_guidance_s3", [])
+        grouped_details["諮商衛教"]["items"].append(
+            {
+                "item_id": "logic_pain_check",
+                "item_name": "確認是否進行無痛麻醉",
+                "description": "依據醫療面談中是否確認檢查型態(s2)或引導判斷(s3)",
+                "weight": 1.0,
+                "user_score": float(s23_score),  # 這是之前算好的變數
+                "scoring_type": "Derived Logic",
+                "relevant_dialogues": list(set(pain_check_dialogues)),
+            }
+        )
 
         # --- 1. 檢閱藥歷 (Review Med History) - UI Items ---
         ui_items = [
@@ -2416,6 +2487,32 @@ class ColonoscopyBowkleanScoringLogic:
                 "user_score": val_judge_reasonable,
                 "scoring_type": "Derived Formula",
                 "relevant_dialogues": [],
+            }
+        )
+
+        # [補回: 臨床判斷 - 判斷服藥時間 T1]
+        grouped_details["臨床判斷"]["items"].append(
+            {
+                "item_id": "clinical_med_timing_1_judge",
+                "item_name": "能依病人狀況判斷服藥時間(第一包)",
+                "description": "臨床判斷維度計分",
+                "weight": 1.0,
+                "user_score": p_t1 * 1.0,  # 使用前面算好的 p_t1
+                "scoring_type": "Standard",
+                "relevant_dialogues": dialogue_map.get("clinical_med_timing_1", []),
+            }
+        )
+
+        # [補回: 臨床判斷 - 判斷服藥時間 T2]
+        grouped_details["臨床判斷"]["items"].append(
+            {
+                "item_id": "clinical_med_timing_2_judge",
+                "item_name": "能依檢查時間判斷早上服藥時間點(第二包)",
+                "description": "臨床判斷維度計分",
+                "weight": 1.0,
+                "user_score": p_t2 * 1.0,  # 使用前面算好的 p_t2
+                "scoring_type": "Standard",
+                "relevant_dialogues": dialogue_map.get("clinical_med_timing_2", []),
             }
         )
 

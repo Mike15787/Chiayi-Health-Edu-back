@@ -290,7 +290,7 @@
     }, 
 
     {
-        "id": "med_mix_method_and_time.s1",
+        "id": "bowklean_mix_method",
         "category": "諮商衛教",
         "item": "說明保可淨使用方式",
         "任務說明": "說明清腸劑的泡製方法，需要正確無誤",
@@ -301,12 +301,12 @@
         ]
     }, 
     {
-        "id": "med_mix_method_and_time.s2",
+        "id": "dulcolax_method_and_time",
         "category": "諮商衛教",
         "item": "說明樂可舒使用方式",
         "任務說明": "口服瀉藥錠劑服用時間及方法",
         "weight": 0.5,
-        "type": "first_med_mix_time",
+        "type": "dulcolax_method_and_time",
         "example_answer": [
             "在檢查前一天中午12點服用「口服瀉藥錠劑」樂可舒(Dulcolax)X顆。"
         ]
