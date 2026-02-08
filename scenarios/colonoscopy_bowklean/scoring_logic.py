@@ -31,10 +31,6 @@ from scenarios.colonoscopy_bowklean.config import (
     CATEGORY_TO_FIELD_MAP,
     COMPOSITE_SUB_ITEM_IDS,
 )
-from scenarios.colonoscopy_bowklean.summary_logic import (
-    calculate_organization_efficiency_score_llm,
-)
-
 logger = logging.getLogger(__name__)
 
 
@@ -266,10 +262,6 @@ class ColonoscopyBowkleanScoringLogic:
                 score = await self._check_rag_basic(
                     session_id, conversation_context, criterion, db, chat_log_id
                 )
-            elif item_type == "RAG_4b":
-                score = await self._check_rag_strong(
-                    session_id, conversation_context, criterion, db, chat_log_id
-                )
             elif item_type == "RAG_confirm_med_time":
                 score = await self._check_confirm_med_time(
                     session_id, conversation_context, criterion, precomputed_data, db, chat_log_id
@@ -394,35 +386,6 @@ class ColonoscopyBowkleanScoringLogic:
             chat_log_id=chat_log_id,
         )
 
-    async def _check_rag_strong(
-        self,
-        session_id: str,
-        conversation_context: str,
-        criterion: dict,
-        db: Session,
-        chat_log_id: int = None,
-    ) -> int:
-        """使用更強的 gemma:4b 模型進行評分"""
-        prompt = f"""
-        你是一個資深護理師。根據學員的回答，以及參考答案，判斷是否達成了評分項目。
-        判斷的標準為語意表達正確、所講的內容正確。
-        如果達成，只輸出 "1"。如果未達成，只輸出 "0"。不要有任何其他文字。
-
-        [評分項目]: {criterion['item']}
-        [參考答案]: {" / ".join(criterion['example_answer'])}
-        [學員回答]:
-        {conversation_context}
-
-        [你的判斷 (1 或 0)]:
-        """
-        return await self._call_llm_and_log(
-            session_id,
-            criterion["id"],
-            prompt,
-            STRONGER_SCORING_MODEL_NAME,
-            db,
-            chat_log_id=chat_log_id,
-        )
 
     # 12/04檢查 OK
     async def _check_confirm_med_time(
@@ -448,17 +411,17 @@ class ColonoscopyBowkleanScoringLogic:
         prompt = ""
         if criterion["id"] == "clinical_med_timing_1":
             prompt = f"""
-            你是一個資深護理師，請判斷學員的衛教內容是否正確。
-            [情境] 病人應該在檢查前一天 ({precomputed_data.prev_1d}) 的下午5點服用第一包藥。
-            [學員回答]: {conversation_context}
+            請根據[要求]中的條件判斷[對話紀錄中]學員的衛教內容是否正確。
+            [要求]: 學員必須提到 病人應該在檢查前一天 ({precomputed_data.prev_1d}) 的下午5點服用第一包(藥/保可淨/清腸藥)。
+            [對話紀錄]: {conversation_context}
             
             學員是否有清楚且正確地告知病人第一包藥的服用日期和時間？如果正確，只輸出 "1"。如果不正確，只輸出 "0"。
             """
         elif criterion["id"] == "clinical_med_timing_2":
             prompt = f"""
-            你是一個資深護理師，請判斷學員的衛教內容是否正確。
-            [情境] 病人應該在檢查當天 ({precomputed_data.exam_day}) 的 {precomputed_data.second_dose_time} 服用第二包藥。
-            [學員回答]: {conversation_context}
+            請根據[要求]中的條件判斷[對話紀錄中]學員的衛教內容是否正確
+            [要求] 學員必須提到 病人應該在檢查當天 ({precomputed_data.exam_day}) 的 {precomputed_data.second_dose_time} 服用第二包藥。
+            [對話紀錄]: {conversation_context}
             
             學員是否有清楚且正確地告知病人第二包藥的服用日期和時間？如果正確，只輸出 "1"。如果不正確，只輸出 "0"。
             """

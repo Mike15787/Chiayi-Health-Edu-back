@@ -1,14 +1,15 @@
-# 開啟虛擬環境 在實驗室電腦
+# 建立虛擬環境
+python3.10 -m venv venv
+
+# 開啟虛擬環境
 source venv/bin/activate
+
 
 執行步驟 現在要先設定環境變數 APIkey
 $env:GEMINI_API_KEY="api key"
 再來設置gemini 或 ollama
 $env:LLM_PROVIDER="gemini"
 $env:LLM_PROVIDER="ollama"
-
-如果要使用vllm
-python run.py --provider vllm
 
 由於有三個測試環境 
 初始化開發資料庫 (chatlog.db)
@@ -36,14 +37,9 @@ python run.py
 python run.py --env dev
 # 使用 chatlog.db
 
-如果要使用vllm
-python run.py --provider vllm
-python run.py --env dev --provider vllm
 ----------------------------------
 開放給藥師測試 (Ngrok)
 python run.py --env human
-如果要使用vllm
-python run.py --env human --provider vllm
 # 使用 human_test.db (此時 ngrok 連進來的對話都會存在這)
 ----------------------------------
 執行自動化評分測試
@@ -72,11 +68,42 @@ streamlit 啟動方式
 用來視覺化整個測試過程
 streamlit run review_app.py
 
-vllm 啟動方式(僅限實驗室server)
-source vllm-venv/bin/activate
 
-python -m vllm.entrypoints.openai.api_server \
-    --model google/gemma-3-4b-it \
-    --port 8243 \
-    --gpu-memory-utilization 0.75
+#透過pm2管理方式 啟用 前端 後端 ngrok vllm
 
+# 1. 啟動前端 (假設在 frontend 目錄)
+cd /path/to/frontend
+pm2 start "npm run dev" --name frontend
+
+# 2. 啟動後端 (使用虛擬環境的 python)
+cd /path/to/backend
+pm2 start "venv/bin/python run.py --env human --provider vllm" --name "health-backend"
+
+# 3. 啟動 ngrok 隧道
+pm2 start "ngrok start --all" --name ngrok-tunnels
+
+# 4. 檢查大家是否都 online
+pm2 list
+
+用於熱重載
+pm2 restart health-backend
+pm2 restart my-frontend
+
+ngrok 查看目前通道與連結
+curl http://localhost:4040/api/tunnels | python3 -m json.tool | grep -E "name|public_url"
+
+
+braslab@braslabchiachi:~$ ls
+Chiayi-Health-Edu-back  Chiayi-Health-Edu-front  tools  vllm-server
+braslab@braslabchiachi:~$ cd vllm-server
+braslab@braslabchiachi:~/vllm-server$ source vllm-venv/bin/activate
+(vllm-venv) braslab@braslabchiachi:~/vllm-server$ python -m vllm.entrypoints.openai.api_server \
+>     --model google/gemma-3-4b-it \
+>     --port 8243 \
+>     --gpu-memory-utilization 0.75
+
+刪除前端pm2
+pm2 delete my-frontend
+
+刪除vllm執行緒
+pm2 delete vllm-service

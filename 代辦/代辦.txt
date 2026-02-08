@@ -118,3 +118,5 @@ proper_guidance_s2 假設達成 那proper_guidance_s3也會達成
 github 合併分支
 修正scoring criteria 把example answer放一邊
 新增一個類似對話 把現在使用者測試的話全部塞進去 提高搜尋準確度
+
+在server 上裝ngrok
