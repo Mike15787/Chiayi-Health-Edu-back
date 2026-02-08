@@ -436,10 +436,7 @@ async def run_voice_replay_test(target_session_ids: list):
 
 if __name__ == "__main__":
     # 目標 Session IDs
-    target_sessions = [
-        "session_1769774994631_copzyqvas",
-        "session_1769776732660_p3k2fl0zk",
-    ]
+    target_sessions = ["session_1769434914690_arjshypby"]
 
     print(f"🚀 啟動語音回放測試 (Voice Replay Tester)")
     print(f"📂 資料庫來源: human_test.db")

@@ -1,10 +1,14 @@
+纖暫定
 target_sessions = [
         "session_1769303919499_tgpqudkp2",
         "session_1769305390196_txyscuj5a",
         "session_1769434914690_arjshypby",
         "session_1769511182774_0hdkvwy3h",
+        "session_1769512534643_o5fuqefpg",
         "session_1769603505990_6fbow92m6",
         "session_1769693002595_th23ayfeo",
         "session_1769774994631_copzyqvas",
         "session_1769776732660_p3k2fl0zk",
+        "session_1769948170673_m4nq4emf1",
+        "session_1769949647951_b0cin8d6b",
     ]
