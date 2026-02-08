@@ -456,7 +456,7 @@ def transcribe_audio(audio_path: str) -> dict:
             language="zh",
             fp16=False,
             initial_prompt=prompt_text,  # <--- 關鍵修改在這裡
-            temperature=0.2,  # 稍微降低隨機性，讓它更保守地依賴 prompt
+            temperature=0,  # 稍微降低隨機性，讓它更保守地依賴 prompt
             beam_size=5,  # 增加搜索廣度，提高準確率
         )
 

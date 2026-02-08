@@ -139,6 +139,7 @@ class AgentSettings(Base):
     payment_fee = Column(String, default="未提供", comment="繳交費用")
     laxative_experience = Column(String, default="未提供", comment="過去瀉藥經驗")
     drug_combination = Column(String, comment="組合一或組合二")
+    low_residue_meal = Column(String, comment="低渣飲食代餐無或有")
 
 
 # 修改 SessionUserMap 模型，添加評分功能

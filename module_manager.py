@@ -50,7 +50,6 @@ class ModuleManager:
                         'patient_agent_builder': getattr(patient_agent_module, 'build_patient_prompt'),
                         'scoring_logic_class': getattr(scoring_logic_module, scoring_class_name),
                         'summary_generator': getattr(summary_logic_module, 'generate_summary_prompt'),
-                        'org_efficiency_scorer': getattr(summary_logic_module, 'calculate_organization_efficiency_score_llm'),
                         'precomputation_performer': getattr(precomputation_logic_module, 'perform_precomputation'),
                     }
                     logger.info(f"Loaded education module: {module_id}")

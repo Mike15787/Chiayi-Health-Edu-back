@@ -36,6 +36,7 @@ data_list = [
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
         "drug_combination": "組合一",
+        "low_residue_meal": "無",
     },
     {
         "agent_code": "A2",
@@ -55,6 +56,7 @@ data_list = [
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
         "drug_combination": "組合一",
+        "low_residue_meal": "無",
     },
     {
         "agent_code": "A3",
@@ -74,6 +76,7 @@ data_list = [
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
         "drug_combination": "組合一",
+        "low_residue_meal": "無",
     },
     {
         "agent_code": "A4",
@@ -93,6 +96,7 @@ data_list = [
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
         "drug_combination": "組合一",
+        "low_residue_meal": "無",
     },
     {
         "agent_code": "A5",
@@ -112,6 +116,7 @@ data_list = [
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
         "drug_combination": "組合一",
+        "low_residue_meal": "無",
     },
     {
         "agent_code": "B1",
@@ -131,6 +136,7 @@ data_list = [
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
         "drug_combination": "組合一",
+        "low_residue_meal": "有",
     },
     {
         "agent_code": "B2",
@@ -150,6 +156,7 @@ data_list = [
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
         "drug_combination": "組合一",
+        "low_residue_meal": "無",
     },
     {
         "agent_code": "B3",
@@ -158,7 +165,7 @@ data_list = [
         "med_info": "Amaryl 2mg tab(瑪爾胰)0.5粒 QD PO(S3)\nJARDiance 10mg tab(恩排糖)1粒 QD PO(S3)\nNovo-Norm 1mg tab(醣立定)1粒 BIDM PO(S3)\nLiVAlo 2mg tab(力清之)1粒 QD PO(N)\nLinicor tab(理脂)1粒 QD PO(N)\nFeBuric 80mg tab(福避痛)0.5粒QD PO(N)\nSmecta 3g powder(舒腹達)1包 QD PO(N)",
         "disease": "第二型糖尿病、混合型高血脂症、慢性痛風，未伴有痛風石、功能性腹瀉",
         "med_complexity": "中(5-9項)",
-        "med_code": "降血糖藥 S3",
+        "med_code": "降血糖藥 S3、止瀉藥物 S5",
         "special_status": "無",
         "check_day": 7,
         "check_time": "下午14:30",
@@ -169,6 +176,7 @@ data_list = [
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
         "drug_combination": "組合一",
+        "low_residue_meal": "無",
     },
     {
         "agent_code": "B4",
@@ -188,6 +196,7 @@ data_list = [
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
         "drug_combination": "組合一",
+        "low_residue_meal": "無",
     },
     {
         "agent_code": "B5",
@@ -207,6 +216,7 @@ data_list = [
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
         "drug_combination": "組合一",
+        "low_residue_meal": "無",
     },
     {
         "agent_code": "C1",
@@ -226,6 +236,7 @@ data_list = [
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
         "drug_combination": "組合一",
+        "low_residue_meal": "無",
     },
     {
         "agent_code": "C2",
@@ -245,6 +256,7 @@ data_list = [
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
         "drug_combination": "組合一",
+        "low_residue_meal": "無",
     },
     {
         "agent_code": "C3",
@@ -264,6 +276,7 @@ data_list = [
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
         "drug_combination": "組合一",
+        "low_residue_meal": "無",
     },
     {
         "agent_code": "C4",
@@ -283,6 +296,7 @@ data_list = [
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
         "drug_combination": "組合二",
+        "low_residue_meal": "無",
     },
     {
         "agent_code": "C5",
@@ -292,7 +306,7 @@ data_list = [
         "disease": "未明示部位特發性慢性痛風，伴有痛風石、老年性骨質疏鬆症未伴有病理性骨折、白內障、乾眼症、慢性十二指腸潰瘍，未伴有出血或穿孔",
         "med_complexity": "高(≥10項)",
         "med_code": "非/無特殊用藥 N",
-        "special_status": "不知道檢查型態",
+        "special_status": "有院外用藥",
         "check_day": 14,
         "check_time": "上午11:20",
         "check_type": "一般檢查",
@@ -302,6 +316,7 @@ data_list = [
         "edu_type": "清腸劑衛教",
         "chemical_type": "保可淨",
         "drug_combination": "組合一",
+        "low_residue_meal": "無",
     },
 ]
 

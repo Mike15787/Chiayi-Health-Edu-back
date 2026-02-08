@@ -141,7 +141,7 @@ def load_whisper_model():
     global whisper_model
     if whisper_model is None:
         logger.info("正在載入 Whisper 模型 (可能需要一點時間)...")
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = "cpu"
         # 建議使用 'base' 或 'small'，若 VRAM 足夠可用 'medium' 效果更好
         whisper_model = whisper.load_model("small", device=device)
         logger.info(f"Whisper 模型載入完成 (Device: {device})")
@@ -437,8 +437,8 @@ async def run_voice_replay_test(target_session_ids: list):
 if __name__ == "__main__":
     # 目標 Session IDs
     target_sessions = [
-        "session_1769303919499_tgpqudkp2",
-        "session_1769305390196_txyscuj5a",
+        "session_1770123206737_6xnnyib7d",
+        "session_1770124069866_1z3snqkub",
     ]
 
     print(f"🚀 啟動語音回放測試 (Voice Replay Tester)")

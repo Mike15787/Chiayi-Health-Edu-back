@@ -68,6 +68,14 @@ streamlit 啟動方式
 用來視覺化整個測試過程
 streamlit run review_app.py
 
+vllm 啟動方式(僅限實驗室server)
+source vllm-venv/bin/activate
+
+python -m vllm.entrypoints.openai.api_server \
+    --model google/gemma-3-4b-it \
+    --port 8243 \
+    --gpu-memory-utilization 0.7
+
 
 #透過pm2管理方式 啟用 前端 後端 ngrok vllm
 
