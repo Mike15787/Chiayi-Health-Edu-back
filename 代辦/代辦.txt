@@ -118,3 +118,10 @@ proper_guidance_s2 假設達成 那proper_guidance_s3也會達成
 github 合併分支
 修正scoring criteria 把example answer放一邊
 新增一個類似對話 把現在使用者測試的話全部塞進去 提高搜尋準確度
+
+0203
+整理修正藥師遇到問題
+我這邊的問題
+那所以要寫的程式就是
+在voice_replay_tester.py 
+要多寫 根據統計這幾次的對話 判斷錯誤
