@@ -4,6 +4,8 @@ import json
 import logging
 import numpy as np
 import faiss
+import wave  # [新增] 用於讀取 wav 資訊
+import math  # [新增] 用於無條件進位
 from sentence_transformers import SentenceTransformer
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -31,6 +33,42 @@ from scenarios.colonoscopy_bowklean.config import (
     CATEGORY_TO_FIELD_MAP,
     COMPOSITE_SUB_ITEM_IDS,
 )
+<<<<<<< HEAD
+=======
+from scenarios.colonoscopy_bowklean.summary_logic import (
+    calculate_organization_efficiency_score_llm,
+)
+
+CRITERIA_KEYWORDS = {
+    # 禁水相關：一定要提到 水、喝、小時、禁
+    "npo_mention": ["水", "禁", "喝", "小時", "不能", "渴"],
+    "clinical_npo_timing": ["水", "禁", "喝", "點", "時"],
+    # 飲食相關：一定要提到 吃、渣、纖維、菜、奶、肉、飲食
+    "diet_basic": ["吃", "渣", "菜", "奶", "肉", "飲食", "纖維", "水果", "湯"],
+    # 泡藥相關：一定要提到 泡、攪、溶解、cc、CC、杯、毫升
+    "bowklean_mix_method": ["泡","攪","溶","cc","CC","ml","杯","水","混","喝"],
+    # 藥丸相關：一定要提到 藥丸、錠、顆、樂可舒、Dulcolax、粉紅
+    "dulcolax_method_and_time": ["藥丸","錠","顆","樂可舒","Dulcolax","粉紅","吃",],
+    # 確認本人：一定要提到 本人、自己、名字、您
+    "confirm_self_use": ["本人", "自己", "名字", "您", "誰"],
+    # 檢查型態：一定要提到 無痛、一般、麻醉、睡、費用、錢、4500、800
+    "proper_guidance_s2": ["無痛", "一般", "麻醉", "睡", "費", "錢"],
+    "proper_guidance_s3": ["無痛", "一般", "麻醉", "睡", "費", "錢", "4500", "800"],
+    # 檢查時間：一定要提到 幾點、什麼時候、日期、號、時間
+    "proper_guidance_s4": ["點", "時", "號", "日", "哪天"],
+    # 水分補充：一定要提到 水、cc、杯、喝
+    "hydration_and_goal.s1": ["水", "cc", "CC", "杯", "喝", "2000", "兩千"],
+    "hydration_and_goal.s2": ["水", "cc", "CC", "杯", "喝", "1000", "一千"],
+    # 理想狀態：一定要提到 便、大號、廁所、顏色、黃、清、水
+    "ideal_intestinal_condition": ["便", "廁所", "拉", "色", "黃", "清", "水", "渣"],
+    # 防止單純講飲食日期時誤觸發
+    "clinical_med_timing_1": ["藥", "包", "喝", "吃", "服用", "第一"],
+    "clinical_med_timing_2": ["藥","包","喝","吃","服用","第二","早上","凌晨","上午"],
+}
+
+AUDIO_DIR = "audio"
+
+>>>>>>> refactor-branch
 logger = logging.getLogger(__name__)
 
 
@@ -91,20 +129,32 @@ class ColonoscopyBowkleanScoringLogic:
         for j, idx in enumerate(I[0]):
             score = distances[0][j]
             if idx != -1 and score > SIMILARITY_THRESHOLD:
-                relevant_ids.add(self.criteria_id_list[idx])
+                c_id = self.criteria_id_list[idx]
+
+                # --- [方案 B 修改] 關鍵字硬過濾 (Keyword Filter) ---
+                if c_id in CRITERIA_KEYWORDS:
+                    required_kws = CRITERIA_KEYWORDS[c_id]
+                    # 如果使用者輸入中，連一個關鍵字都沒出現，就直接略過
+                    if not any(k in user_input for k in required_kws):
+                        logger.debug(
+                            f"[{c_id}] 向量命中(score={score:.2f})但關鍵字不符，忽略。"
+                        )
+                        continue
+
+                relevant_ids.add(c_id)
 
         # --- [修改 1] 強制觸發邏輯 ---
         # 如果 "說明保可淨使用方式" (s1) 被觸發，則強制加入 "臨床判斷-服藥時間" (1 & 2)
         # 因為這通常是在說明泡法的時候會一起講到時間，但向量可能只抓到泡法
-        if "med_mix_method_and_time.s1" in relevant_ids:
+        if "bowklean_mix_method" in relevant_ids:
             logger.info(
-                f"[{MODULE_ID}] 搜尋到 'med_mix_method_and_time.s1', 強制檢查clinical_med_timing"
+                f"[{MODULE_ID}] 搜尋到 'bowklean_mix_method', 強制檢查clinical_med_timing"
             )
             relevant_ids.add("clinical_med_timing_1")
             relevant_ids.add("clinical_med_timing_2")
 
         logger.info(
-            f"Found relevant criteria IDs for module {MODULE_ID}: {list(relevant_ids)}"
+            f"找到可能的評分項目 {MODULE_ID}: {list(relevant_ids)}"
         )
         return list(relevant_ids)
 
@@ -135,7 +185,7 @@ class ColonoscopyBowkleanScoringLogic:
             db.add(log_entry)
 
             logger.info(
-                f"評分項目 '{item_id}' for module {MODULE_ID} with score {score}. Raw response: '{raw_response[:50]}...'"
+                f"評分項目 '{item_id}' 模組: {MODULE_ID} 分數: {score} 回應: '{raw_response[:50]}...'"
             )
             return score
         except Exception as e:
@@ -166,13 +216,17 @@ class ColonoscopyBowkleanScoringLogic:
         # 1. 準備給 LLM 評分的完整上下文 (保持完整，讓 LLM 看得懂前因後果)
         formatted_conversation_for_llm = format_snippet(chat_snippet)
 
-        # 2. [修改重點] 準備給向量搜尋用的文字 (只取最後 3 句)
-        # 這樣可以讓搜尋更聚焦在當下話題，減少舊話題的干擾
-        search_snippet = chat_snippet[-3:]
-        formatted_conversation_for_search = format_snippet(search_snippet)
+        user_messages = [item['message'] for item in chat_snippet[-3:] if item['role']=='user']
+
+        if not user_messages:
+            logger.debug(f"[{session_id}] Skip search: No user messages in snippet.")
+            return []
+
+        # 將學員的訊息串接起來，不包含 "學員:" 標籤，純文字搜尋最準
+        formatted_conversation_for_search = " ".join(user_messages)
 
         logger.info(
-            f"[{session_id}] Vector Search Query (Last 3 lines): {formatted_conversation_for_search.replace(chr(10), ' | ')}"
+            f"[{session_id}] 向量搜尋 (最新三句): {formatted_conversation_for_search.replace(chr(10), ' | ')}"
         )
 
         # 3. 執行搜尋 (使用縮減後的文字搜尋，保持 top_k=5)
@@ -299,9 +353,9 @@ class ColonoscopyBowkleanScoringLogic:
                 score = await self._check_med_mix_method(
                     session_id, conversation_context, criterion, db, chat_log_id
                 )
-            elif item_type == "first_med_mix_time":
+            elif item_type == "dulcolax_method_and_time":
                 # 對應: 說明樂可舒使用方式 (錠劑時間)
-                score = await self._check_first_med_mix_time(
+                score = await self._check_dulcolax_method_and_time(
                     session_id, conversation_context, criterion, db, chat_log_id
                 )
             elif item_type == "hydration_method":
@@ -320,6 +374,10 @@ class ColonoscopyBowkleanScoringLogic:
                 )
             elif item_type == "RAG_guidance3_check_type":
                 score = await self._check_proper_guidance_s3(
+                    session_id, conversation_context, criterion, db, chat_log_id
+                )
+            elif item_type == "bowklean_onset_time":
+                score = await self._check_bowklean_onset_time(
                     session_id, conversation_context, criterion, db, chat_log_id
                 )
             else:  # 對於未定義的類型，使用基礎 RAG 邏輯
@@ -415,15 +473,23 @@ class ColonoscopyBowkleanScoringLogic:
             [要求]: 學員必須提到 病人應該在檢查前一天 ({precomputed_data.prev_1d}) 的下午5點服用第一包(藥/保可淨/清腸藥)。
             [對話紀錄]: {conversation_context}
             
+            忽略無關藥物(清腸劑/保可淨)的日期說明。這裡只檢查「藥物(清腸劑/保可淨)」的服用時間
             學員是否有清楚且正確地告知病人第一包藥的服用日期和時間？如果正確，只輸出 "1"。如果不正確，只輸出 "0"。
             """
         elif criterion["id"] == "clinical_med_timing_2":
             prompt = f"""
+<<<<<<< HEAD
             請根據[要求]中的條件判斷[對話紀錄中]學員的衛教內容是否正確
             [要求] 學員必須提到 病人應該在檢查當天 ({precomputed_data.exam_day}) 的 {precomputed_data.second_dose_time} 服用第二包藥。
             [對話紀錄]: {conversation_context}
+=======
+            請判斷學員的衛教內容是否正確，只要學員有回答出情境中的內容就正確，重點在服用時間有沒有對上，早上、上午和凌晨是一樣的意思
+            [情境] 病人應該在檢查當天 ({precomputed_data.exam_day}) 的 {precomputed_data.second_dose_time} 服用第二包藥(保可淨)。
+            [學員回答]: {conversation_context}
+>>>>>>> refactor-branch
             
-            學員是否有清楚且正確地告知病人第二包藥的服用日期和時間？如果正確，只輸出 "1"。如果不正確，只輸出 "0"。
+            忽略無關藥物(清腸劑/保可淨)的日期說明。這裡只檢查「藥物(清腸劑/保可淨)」的服用時間
+            學員是否有正確告知病人第二包藥的服用日期和時間？如果正確，只輸出 "1"。如果不正確，只輸出 "0"。
             """
         else:
             return 0
@@ -627,25 +693,32 @@ class ColonoscopyBowkleanScoringLogic:
             )
             return 0
         prompt = f"""
-        你是一個資深護理師，請判斷學員的衛教內容是否正確。
+        你是一個資深護理師，請判斷學員的「飲食衛教」內容是否正確。
 
-        [正確的飲食時程表]:
-        - 檢查前三天 ({precomputed_data.prev_3d})：低渣飲食
-        - 檢查前兩天 ({precomputed_data.prev_2d})：低渣飲食
-        - 檢查前一天 ({precomputed_data.prev_1d})：無渣流質飲食 (如運動飲料、清湯)
+        [正確的飲食時程與內容標準]:
+        1. **低渣飲食**：
+           - 時間：檢查前三天 ({precomputed_data.prev_3d}) 及 前兩天 ({precomputed_data.prev_2d})。
+           - 內容：減少糞便體積。
+           - 禁止：**蔬菜、水果**、高纖維食物、**奶類/乳製品**(牛奶、起司)、堅果。
+           - 可食：白飯、白麵條、去皮魚肉、豆腐、蛋。
+
+        2. **無渣流質飲食 (清流質)**：
+           - 時間：檢查前一天 ({precomputed_data.prev_1d})。
+           - 內容：完全無固體，可透光的液體。
+           - 禁止：**牛奶/豆漿** (不透明)、濃湯、固體食物。
+           - 可食：運動飲料 (舒跑/寶礦力)、無渣菜湯/魚湯/肉湯、蜂蜜水、冬瓜茶、開水。
 
         [學員回答]: 
         {conversation_context}
         
         [評分標準]:
-        請判斷學員是否正確說明了上述兩個階段的飲食原則（低渣 vs 無渣流質）。
+        請判斷學員是否正確說明了上述兩個階段的「時間點」以及「飲食原則」。
         
-        [寬容度說明]:
-        1. 學員可以使用「具體日期」(如{precomputed_data.prev_3d})。
-        2. 學員也可以使用「相對日期」(如 "檢查前三天"、"前兩天"、"明天/後天")。
-        3. 只要學員講出的邏輯符合上述時程表，就請給分。
+        - 必須區分「前三天/前兩天是低渣」與「前一天是無渣流質」。
+        - 若學員提到「不能吃青菜水果」、「不能喝牛奶」，這是正確的低渣/無渣觀念，請給予肯定。
+        - 只要邏輯正確（時間階段對，且飲食內容大致符合標準），即可給分。
 
-        如果飲食觀念與時程正確，只輸出 "1"。如果不正確，只輸出 "0"。
+        如果飲食觀念與時程正確，只輸出 "1"。如果不正確或未提及，只輸出 "0"。
         """
         return await self._call_llm_and_log(
             session_id,
@@ -699,7 +772,7 @@ class ColonoscopyBowkleanScoringLogic:
             chat_log_id=chat_log_id,
         )
 
-    async def _check_first_med_mix_time(
+    async def _check_dulcolax_method_and_time(
         self,
         session_id: str,
         conversation_context: str,
@@ -844,10 +917,10 @@ class ColonoscopyBowkleanScoringLogic:
         item_id = criterion["id"]
 
         if item_id == "hydration_and_goal.s1":
-            correct_volume = "2000c.c.以上 (或 8 杯)"
+            correct_volume = "2000c.c.以上 (或 8 杯 250cc)"
             correct_timing_concept = "2-3小時內陸續分次喝完"
         elif item_id == "hydration_and_goal.s2":
-            correct_volume = "1000c.c. (或 4 杯)"
+            correct_volume = "1000c.c. (或 4 杯 250cc)"
             correct_timing_concept = "1小時內陸續分次喝完"
         else:
             logger.error(f"Unknown hydration criteria ID: {item_id}")
@@ -855,12 +928,18 @@ class ColonoscopyBowkleanScoringLogic:
 
         prompt = f"""
         你是一位藥師，請檢查學員對於「水分補充」的衛教是否正確且完整。
+        
         [正確標準]: 
         1. 總水量約 {correct_volume}。
         2. 需要「分次」喝完 (例如：{correct_timing_concept})，不可牛飲。
         [對話紀錄]: {conversation_context}
-        學員是否提到了「{correct_volume}」以及「分次喝/慢慢喝」這兩個關鍵概念？
-        符合輸出 "1"，不符合或未提及輸出 "0"。
+        
+        注意事項
+        1.學員是否提到了「{correct_volume}」以及「分次喝/慢慢喝」這兩個關鍵概念？
+        2.學員在教泡藥(保可淨)時，會提到「用 150c.c. 的水泡開藥粉」。
+          *請注意：這 150c.c. 絕對不算在補充水分內！*
+          如果學員只說了「用150cc水泡藥」，但沒有提到後續要喝 {correct_volume}的水，請務輸出 "0"
+        符合輸出 "1"，不符合或未提及輸出 "0" 不要輸出除了數字以外的文字
         """
         return await self._call_llm_and_log(
             session_id, item_id, prompt, SCORING_MODEL_NAME, db, chat_log_id=chat_log_id
@@ -947,7 +1026,7 @@ class ColonoscopyBowkleanScoringLogic:
     ) -> int:
         """
         單純檢查學員是否有提到「禁水」這個動作 (RAG_explain_npo)。
-        註：不同於 RAG_confirm_npo (那是檢查時間點計算是否正確)，這裡只檢查有無衛教病人「要禁水」。
+        [雙向綁定]: 如果這裡通過，clinical_npo_timing 也會自動給分。
         """
         prompt = f"""
         請檢查學員是否有告知病人檢查前需要「禁水」(不能喝水)。
@@ -962,7 +1041,7 @@ class ColonoscopyBowkleanScoringLogic:
         有提到禁水 -> 輸出 "1"
         完全沒提到 -> 輸出 "0"
         """
-        return await self._call_llm_and_log(
+        score = await self._call_llm_and_log(
             session_id,
             criterion["id"],
             prompt,
@@ -970,6 +1049,28 @@ class ColonoscopyBowkleanScoringLogic:
             db,
             chat_log_id=chat_log_id,
         )
+
+        # [雙向綁定邏輯 B]：如果有提到禁水，連同「臨床判斷-禁水時間」一起給分
+        if score == 1:
+            logger.info(
+                f"[{session_id}] npo_mention passed, auto-scoring clinical_npo_timing."
+            )
+            try:
+                stmt = sqlite_insert(AnswerLog).values(
+                    session_id=session_id,
+                    module_id=MODULE_ID,
+                    scoring_item_id="clinical_npo_timing",  # 連動項目
+                    score=1,
+                    created_at=datetime.now(),
+                )
+                on_conflict_stmt = stmt.on_conflict_do_update(
+                    index_elements=["session_id", "scoring_item_id"], set_=dict(score=1)
+                )
+                db.execute(on_conflict_stmt)
+            except Exception as e:
+                logger.error(f"Failed to auto-score 'clinical_npo_timing': {e}")
+
+        return score
 
     async def _check_satisfy_info_global(
         self,
@@ -1055,6 +1156,51 @@ class ColonoscopyBowkleanScoringLogic:
 
         return score
 
+    async def _check_bowklean_onset_time(
+        self,
+        session_id: str,
+        conversation_context: str,
+        criterion: dict,
+        db: Session,
+        chat_log_id: int = None,
+    ) -> int:
+        """
+        [Type: bowklean_onset_time]
+        檢查藥物作用時間。
+        重點：
+        1. 正確時間約為服藥後 2-3 小時 (或至少1小時以上)。
+        2. 嚴格禁止說「馬上」、「立刻」、「吃完就拉」，這屬於錯誤醫療常識，必須給 0 分。
+        """
+        prompt = f"""
+        你是一位資深臨床藥師。請判斷學員對於「保可淨(Bowklean)藥物作用時間」的衛教是否正確且安全。
+
+        [正確的醫療知識]:
+        保可淨藥物作用較溫和，服用後通常需要等待 **2到3小時** 才會開始出現腹瀉反應 (最快也要1小時)。
+
+        [常見的錯誤觀念 (必須判為 0 分)]:
+        ❌ 絕對不能說「吃完馬上」、「立刻」、「幾分鐘內」就會開始拉肚子。這是錯誤的資訊。
+
+        [學員與病人的對話紀錄]:
+        ---
+        {conversation_context}
+        ---
+
+        [你的判斷任務]:
+        1. 如果學員有提到 **「2-3小時」**、**「1-2小時」** 或 **「稍後/晚一點」** 才會開始作用 -> 請輸出 "1"。
+        2. 如果學員說 **「馬上」**、**「立刻」**、**「吃下去就會拉」** -> 請務必輸出 "0" (因為這是錯誤衛教)。
+        3. 如果完全沒提到時間 -> 請輸出 "0"。
+
+        請只輸出 "1" 或 "0"。
+        """
+        return await self._call_llm_and_log(
+            session_id,
+            criterion["id"],
+            prompt,
+            SCORING_MODEL_NAME,
+            db,
+            chat_log_id=chat_log_id,
+        )
+
     ''' 舊的 透過時間戳記來評分組織效率 不太穩定
     def _check_organization_sequence_by_time(
         self, session_id: str, has_dulcolax: bool, has_special_meds: bool, db: Session
@@ -1064,8 +1210,8 @@ class ColonoscopyBowkleanScoringLogic:
 
         標準順序 (類別代號)：
         1. 飲食衛教 (diet_basic)
-        2. 口服瀉藥錠劑 (med_mix_method_and_time.s2) -> 僅在 has_dulcolax=True 時檢查
-        3. 清腸粉劑 (med_mix_method_and_time.s1)
+        2. 口服瀉藥錠劑 (dulcolax_method_and_time) -> 僅在 has_dulcolax=True 時檢查
+        3. 清腸粉劑 (bowklean_mix_method)
         4. 禁水時間 (npo_mention)
         5. 其他用藥 (specify_special_meds) -> 僅在 has_special_meds=True 時檢查
 
@@ -1075,10 +1221,10 @@ class ColonoscopyBowkleanScoringLogic:
         """
 
         # 1. 定義要檢查的項目 ID
-        target_items = ["diet_basic", "med_mix_method_and_time.s1", "npo_mention"]
+        target_items = ["diet_basic", "bowklean_mix_method", "npo_mention"]
 
         if has_dulcolax:
-            target_items.append("med_mix_method_and_time.s2")
+            target_items.append("dulcolax_method_and_time")
 
         if has_special_meds:
             target_items.append("specify_special_meds")
@@ -1113,7 +1259,7 @@ class ColonoscopyBowkleanScoringLogic:
         # 順序：Diet -> [Tablet] -> Powder -> NPO -> [Special]
 
         t_diet = passed_times["diet_basic"]
-        t_powder = passed_times["med_mix_method_and_time.s1"]
+        t_powder = passed_times["bowklean_mix_method"]
         t_npo = passed_times["npo_mention"]
 
         # 基礎檢查: 飲食 -> 粉劑 -> 禁水
@@ -1126,7 +1272,7 @@ class ColonoscopyBowkleanScoringLogic:
         # 若有錠劑 (Dulcolax)，順序應為: 飲食 -> 錠劑 -> 粉劑
         # (通常錠劑是中午吃，粉劑是下午/晚上喝，故衛教順序通常先講錠劑)
         if has_dulcolax:
-            t_tablet = passed_times["med_mix_method_and_time.s2"]
+            t_tablet = passed_times["dulcolax_method_and_time"]
             if not (t_diet < t_tablet < t_powder):
                 logger.info(f"[{session_id}] 組織效率扣分: 錠劑順序錯誤")
                 return 1.0
@@ -1288,6 +1434,56 @@ class ColonoscopyBowkleanScoringLogic:
                 f"[{session_id}] 組織效率(LLM): 順序混亂 (1分). Response: {response}"
             )
             return 1.0
+
+    # [新增] 輔助函式：計算單一音檔秒數
+    def _get_audio_duration(self, filename: str) -> float:
+        """讀取 wav 檔案並返回秒數，若讀取失敗則回傳 0"""
+        if not filename:
+            return 0.0
+
+        file_path = os.path.join(AUDIO_DIR, filename)
+        if not os.path.exists(file_path):
+            logger.warning(f"Audio file not found: {file_path}")
+            return 0.0
+
+        try:
+            with wave.open(file_path, "r") as f:
+                frames = f.getnframes()
+                rate = f.getframerate()
+                duration = frames / float(rate)
+                return duration
+        except Exception as e:
+            logger.warning(f"Error reading audio duration for {filename}: {e}")
+            return 0.0
+
+    # [新增] 輔助函式：計算 Session 總衛教時間 (新公式)
+    def _calculate_total_session_time(self, chat_logs: List[ChatLog]) -> float:
+        """
+        計算邏輯：
+        1. 累加 user 和 patient(AI) 的音檔總長度。
+        2. 加上 (音檔數量 / 1.25) 秒作為緩衝 (模擬思考與換氣時間)。
+        3. 回傳單位為「分鐘」。
+        """
+        total_audio_seconds = 0.0
+        audio_count = 0
+
+        for log in chat_logs:
+            if log.audio_filename:
+                duration = self._get_audio_duration(log.audio_filename)
+                total_audio_seconds += duration
+                audio_count += 1
+
+        # 公式：總音檔時間 + (總數量 / 1.25) 取整數
+        buffer_seconds = int(audio_count / 1.25)
+        final_total_seconds = total_audio_seconds + buffer_seconds
+
+        # 轉為分鐘
+        duration_minutes = final_total_seconds / 60.0
+
+        logger.info(
+            f"Time Calc: AudioSecs={total_audio_seconds:.2f}, Count={audio_count}, Buffer={buffer_seconds}, TotalMin={duration_minutes:.2f}"
+        )
+        return duration_minutes
 
     # --- 新增：最終分數計算邏輯 ---
     # scenarios/colonoscopy_bowklean/scoring_logic.py
@@ -1519,7 +1715,7 @@ class ColonoscopyBowkleanScoringLogic:
         pass_note_phrase = is_passed("note_have_med_time")
         pass_time1 = is_passed("clinical_med_timing_1")
         pass_time2 = is_passed("clinical_med_timing_2")
-        pass_s2 = is_passed("med_mix_method_and_time.s2")
+        pass_s2 = is_passed("dulcolax_method_and_time")
 
         logic_met = pass_time1 and pass_time2
         if has_dulcolax:
@@ -1536,21 +1732,25 @@ class ColonoscopyBowkleanScoringLogic:
         # 3-3. 藥物使用時機及方式
         val_med_method = 0.0
         if has_dulcolax:
-            p_m_s1 = is_passed("med_mix_method_and_time.s1")
-            p_m_s2 = is_passed("med_mix_method_and_time.s2")
+            p_m_s1 = is_passed("bowklean_mix_method")
+            p_m_s2 = is_passed("dulcolax_method_and_time")
             val_med_method = (p_m_s1 * 1.0) + (p_m_s2 * 1.0)
             record_item(
-                "3.諮商衛教", "藥物方法(保可淨)", p_m_s1, p_m_s1 * 1.0, "組合F: 佔1分"
+                "3.諮商衛教", "藥物方法(保可淨)", p_m_s1, p_m_s1 * 0.5, "組合F: 佔0.5分"
             )
             record_item(
-                "3.諮商衛教", "藥物方法(樂可舒)", p_m_s2, p_m_s2 * 1.0, "組合F: 佔1分"
+                "3.諮商衛教", "藥物方法(樂可舒)", p_m_s2, p_m_s2 * 0.5, "組合F: 佔0.5分"
             )
         else:
-            p_m_s1 = is_passed("med_mix_method_and_time.s1")
-            val_med_method = p_m_s1 * 2.0
+            p_m_s1 = is_passed("bowklean_mix_method")
+            val_med_method = p_m_s1
             record_item(
                 "3.諮商衛教", "藥物方法(保可淨)", p_m_s1, val_med_method, "組合E: 佔2分"
             )
+
+        pass_time1 = is_passed("clinical_med_timing_1")  # 第一包時間
+        pass_time2 = is_passed("clinical_med_timing_2")  # 第二包時間
+        val_med_method = val_med_method + pass_time1*0.5 + pass_time2*0.5
 
         # 3-4. 水分補充
         p_hydro = is_passed("hydration_and_goal.s1") or is_passed(
@@ -1615,14 +1815,11 @@ class ColonoscopyBowkleanScoringLogic:
         # ==========================================
 
         # 4-1. 表現尊重
-        has_respect_basis = val_hello > 0 and val_sit > 0 and pg_s1 > 0
-        score_respect = 0.0
-        if has_respect_basis:
-            score_respect = 2.0 if is_case_A2 else 3.0
+        score_respect = val_hello + val_sit + pg_s1
         record_item(
             "4.人道專業",
             "表現尊重",
-            has_respect_basis,
+            score_respect > 0,
             score_respect,
             "邏輯: 問好+請坐+引導",
         )
@@ -1634,14 +1831,11 @@ class ColonoscopyBowkleanScoringLogic:
         record_item("4.人道專業", "需求滿足(確認理解)", p_satisfy, val_satisfy)
 
         # 4-3. 同理心
-        has_empathy_basis = val_no_term > 0 and val_ask_exp > 0
-        score_empathy = 0.0
-        if has_empathy_basis:
-            score_empathy = 1.0 if is_case_A2 else 2.0
+        score_empathy = val_no_term + val_ask_exp
         record_item(
             "4.人道專業",
             "同理心",
-            has_empathy_basis,
+            score_empathy > 0,
             score_empathy,
             "邏輯: 無術語+問經驗",
         )
@@ -1681,11 +1875,12 @@ class ColonoscopyBowkleanScoringLogic:
         duration_minutes = 0.0
 
         if chat_logs:
+            # 改用音檔計算邏輯
+            duration_minutes = self._calculate_total_session_time(chat_logs)
+
             val_time = 0.5  # 只要有開口，至少給 0.5 分
-            start_time = chat_logs[0].time
-            end_time = chat_logs[-1].time
-            duration_minutes = (end_time - start_time).total_seconds() / 60.0
-            if 5 <= duration_minutes <= 9:
+            # 設定標準：5 到 9 分鐘為滿分 (此標準可依需求調整)
+            if 5.0 <= duration_minutes <= 9.0:
                 val_time = 1.5
 
         record_item(
@@ -1925,6 +2120,13 @@ class ColonoscopyBowkleanScoringLogic:
             "proper_guidance_s5",
         ]
 
+        # [新增] 需要手動處理顯示的項目，先在迴圈中跳過，稍後手動加入
+        manual_display_items = [
+            "bowklean_mix_method",  # 保可淨泡法 (合併用)
+            "clinical_med_timing_1",  # 第一包時間 (合併用)
+            "clinical_med_timing_2",  # 第二包時間 (合併用)
+        ]
+
         for criterion in self.criteria:
             item_id = criterion["id"]
             category = criterion.get("category", "其他")
@@ -1933,6 +2135,8 @@ class ColonoscopyBowkleanScoringLogic:
             if item_id in proper_guidance_ids:
                 continue
 
+            if item_id in manual_display_items:
+                continue  # 跳過手動處理項
             # --- [修改重點 1] 過濾「說明藥物開立目的」 ---
             # 邏輯：組合一 (has_dulcolax=False) -> 顯示 s1
             #       組合二 (has_dulcolax=True)  -> 顯示 s2
@@ -1943,7 +2147,7 @@ class ColonoscopyBowkleanScoringLogic:
 
             # --- [修改重點 2] 過濾「說明樂可舒使用方式」 ---
             # 邏輯：組合一沒有樂可舒，直接隱藏 s2
-            if item_id == "med_mix_method_and_time.s2" and not has_dulcolax:
+            if item_id == "dulcolax_method_and_time" and not has_dulcolax:
                 continue
 
             # --- [修改重點 3] 過濾「水分補充」 (如果 s1/s2 也是對應不同組合的話) ---
@@ -1963,7 +2167,7 @@ class ColonoscopyBowkleanScoringLogic:
             final_weight = base_weight
             final_score = 0.0
 
-            if item_id == "med_mix_method_and_time.s1":
+            if item_id == "bowklean_mix_method":
                 # 說明保可淨使用方式
                 # 組合二 (有樂可舒): 保可淨佔 1 分 (因為樂可舒 s2 也會出現佔 1 分)
                 # 組合一 (無樂可舒): 保可淨佔 2 分
@@ -1978,7 +2182,7 @@ class ColonoscopyBowkleanScoringLogic:
             elif item_id == "satisfy_patient_infomation":
                 final_weight = 4.0 if is_case_A2 else 3.0
                 final_score = final_weight if score_val else 0
-            elif item_id == "med_mix_method_and_time.s1":
+            elif item_id == "bowklean_mix_method":
                 final_weight = 1.0 if has_dulcolax else 2.0
                 final_score = final_weight if score_val else 0
             else:
@@ -2050,6 +2254,57 @@ class ColonoscopyBowkleanScoringLogic:
         # 這是此模組特有的，如果是別的教案，會有完全不同的實作
         # ====================================================
 
+        # --- 1. 組合「說明藥物使用時機及方式」 (取代原本的保可淨泡法) ---
+        p_m_s1 = is_passed("bowklean_mix_method")  # 保可淨泡法 (1分)
+        p_t1 = is_passed("clinical_med_timing_1")  # 第一包時間 (0.5分)
+        p_t2 = is_passed("clinical_med_timing_2")  # 第二包時間 (0.5分)
+
+        # 計算總分 (滿分2分)
+        med_usage_total_score = (p_m_s1 * 1.0) + (p_t1 * 0.5) + (p_t2 * 0.5)
+
+        # 組合描述文字
+        med_usage_desc = (
+            f"• 保可淨泡製方式(1分): {'✅' if p_m_s1 else '❌'}\n"
+            f"• 第一包服用時間(0.5分): {'✅' if p_t1 else '❌'}\n"
+            f"• 第二包服用時間(0.5分): {'✅' if p_t2 else '❌'}"
+        )
+
+        # 組合相關對話
+        med_usage_dialogues = (
+            dialogue_map.get("bowklean_mix_method", [])
+            + dialogue_map.get("clinical_med_timing_1", [])
+            + dialogue_map.get("clinical_med_timing_2", [])
+        )
+
+        grouped_details["諮商衛教"]["items"].append(
+            {
+                "item_id": "med_usage_combined",
+                "item_name": "說明藥物使用時機及方式",  # 這是新標題
+                "description": med_usage_desc,
+                "weight": 2.0,
+                "user_score": float(med_usage_total_score),
+                "scoring_type": "Composite Logic",
+                "relevant_dialogues": list(set(med_usage_dialogues)),
+            }
+        )
+
+        # --- 2. 新增「確認是否進行無痛麻醉」 (補回缺失項目) ---
+        # 邏輯同醫療面談的 s2/s3 (s23_score)，但在此處佔1分
+        pain_check_dialogues = dialogue_map.get(
+            "proper_guidance_s2", []
+        ) + dialogue_map.get("proper_guidance_s3", [])
+        grouped_details["諮商衛教"]["items"].append(
+            {
+                "item_id": "logic_pain_check",
+                "item_name": "確認是否進行無痛麻醉",
+                "description": "依據醫療面談中是否確認檢查型態(s2)或引導判斷(s3)",
+                "weight": 1.0,
+                "user_score": float(s23_score),  # 這是之前算好的變數
+                "scoring_type": "Derived Logic",
+                "relevant_dialogues": list(set(pain_check_dialogues)),
+            }
+        )
+
         # --- 1. 檢閱藥歷 (Review Med History) - UI Items ---
         ui_items = [
             ("viewed_alltimes_ci", "檢閱「歷次清腸資訊」", 2.0),
@@ -2077,36 +2332,38 @@ class ColonoscopyBowkleanScoringLogic:
             )
 
         # --- 2. 人道專業 (Logic Formulas) ---
+        w_hello = 0.5 if is_case_A2 else 1.0
+        w_sit = 0.5 if is_case_A2 else 1.0
+        w_pg1 = 1.0
+
         # 表現尊重
-        val_hello = is_passed("greeting_hello")
-        val_sit = is_passed("invite_to_sit")
-        pg_s1 = is_passed("proper_guidance_s1")
-        has_respect = val_hello > 0 and val_sit > 0 and pg_s1 > 0
-        respect_w = 2.0 if is_case_A2 else 3.0
+        s_hello = w_hello if is_passed("greeting_hello") else 0.0
+        s_sit = w_sit if is_passed("invite_to_sit") else 0.0
+        s_pg1 = w_pg1 if is_passed("proper_guidance_s1") else 0.0
+        final_respect_score = s_hello + s_sit + s_pg1
         grouped_details["人道專業"]["items"].append(
             {
                 "item_id": "logic_respect",
                 "item_name": "表現尊重",
                 "description": "同時達成：問好、請坐、引導衛教",
-                "weight": respect_w,
-                "user_score": respect_w if has_respect else 0.0,
+                "weight": w_hello + w_sit + w_pg1,
+                "user_score": final_respect_score,
                 "scoring_type": "Logic Formula",
                 "relevant_dialogues": [],
             }
         )
 
         # 同理心
-        val_no_term = is_passed("no_use_term")
-        val_ask_exp = is_passed("review_med_history_1")
-        has_empathy = val_no_term > 0 and val_ask_exp > 0
-        empathy_w = 1.0 if is_case_A2 else 2.0
+        s_no_term = 1.0 if is_passed("no_use_term") else 0.0
+        s_ask_exp = 1.0 if is_passed("review_med_history_1") else 0.0
+        final_empathy_score = s_no_term + s_ask_exp
         grouped_details["人道專業"]["items"].append(
             {
                 "item_id": "logic_empathy",
                 "item_name": "同理心(感同身受)",
                 "description": "同時達成：無專業術語、詢問過往經驗",
-                "weight": empathy_w,
-                "user_score": empathy_w if has_empathy else 0.0,
+                "weight": 2.0,
+                "user_score": final_empathy_score,
                 "scoring_type": "Logic Formula",
                 "relevant_dialogues": [],
             }
@@ -2136,12 +2393,13 @@ class ColonoscopyBowkleanScoringLogic:
             .order_by(ChatLog.time.asc())
             .all()
         )
-        duration_minutes = 0
+        duration_minutes = 0.0
         if chat_logs_q:
-            duration_minutes = (
-                chat_logs_q[-1].time - chat_logs_q[0].time
-            ).total_seconds() / 60.0
-        val_time = 1.5 if (5 <= duration_minutes <= 9) else 0.5
+            # 改用音檔計算邏輯
+            duration_minutes = self._calculate_total_session_time(chat_logs_q)
+
+        val_time = 1.5 if (5.0 <= duration_minutes <= 9.0) else 0.5
+
         grouped_details["組織效率"]["items"].append(
             {
                 "item_id": "logic_time",
@@ -2149,7 +2407,7 @@ class ColonoscopyBowkleanScoringLogic:
                 "description": f"總衛教時間：{duration_minutes:.1f} 分鐘 (目標 5-9 分鐘)",
                 "weight": 1.5,
                 "user_score": val_time,
-                "scoring_type": "Time Logic",
+                "scoring_type": "Time Logic (Audio Based)",
                 "relevant_dialogues": [],
             }
         )
@@ -2205,6 +2463,32 @@ class ColonoscopyBowkleanScoringLogic:
                 "user_score": val_judge_reasonable,
                 "scoring_type": "Derived Formula",
                 "relevant_dialogues": [],
+            }
+        )
+
+        # [補回: 臨床判斷 - 判斷服藥時間 T1]
+        grouped_details["臨床判斷"]["items"].append(
+            {
+                "item_id": "clinical_med_timing_1_judge",
+                "item_name": "能依病人狀況判斷服藥時間(第一包)",
+                "description": "臨床判斷維度計分",
+                "weight": 1.0,
+                "user_score": p_t1 * 1.0,  # 使用前面算好的 p_t1
+                "scoring_type": "Standard",
+                "relevant_dialogues": dialogue_map.get("clinical_med_timing_1", []),
+            }
+        )
+
+        # [補回: 臨床判斷 - 判斷服藥時間 T2]
+        grouped_details["臨床判斷"]["items"].append(
+            {
+                "item_id": "clinical_med_timing_2_judge",
+                "item_name": "能依檢查時間判斷早上服藥時間點(第二包)",
+                "description": "臨床判斷維度計分",
+                "weight": 1.0,
+                "user_score": p_t2 * 1.0,  # 使用前面算好的 p_t2
+                "scoring_type": "Standard",
+                "relevant_dialogues": dialogue_map.get("clinical_med_timing_2", []),
             }
         )
 

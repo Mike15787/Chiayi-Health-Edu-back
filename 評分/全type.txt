@@ -1,9 +1,0 @@
-RAG
-RAG_4b
-RAG_confirm_med_time
-RAG_confirm_npo
-RAG_diet_logic
-RAG_explain_npo
-RAG_med_usage_method
-RAG_sequence_check
-RAG_special_meds
