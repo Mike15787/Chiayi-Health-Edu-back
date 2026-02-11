@@ -1,5 +1,6 @@
 # main.py
-
+import numpy as np
+from scipy.io import wavfile
 from fastapi import (
     FastAPI,
     Request,
@@ -166,7 +167,7 @@ async def init_models():
     try:
         # 初始化 Whisper STT 模型
         logger.info("初始化 Whisper STT 模型...")
-        whisper_model = whisper.load_model("base")
+        whisper_model = whisper.load_model("small")
         logger.info("Whisper STT 模型初始化完成")
 
     except Exception as e:
@@ -206,6 +207,7 @@ class STTResponse(BaseModel):
     text: str
     confidence: float = 0.0
     session_id: str
+    is_silence: bool = False  # 新增此欄位
 
 
 class ChatResponse(BaseModel):
@@ -420,8 +422,6 @@ async def generate_tts_audio(text: str, voice: str = None) -> str:
 def create_silence_audio():
     """創建無聲音頻檔案作為備用 生成錯誤時可保證不整個系統停擺"""
     try:
-        import numpy as np
-        from scipy.io import wavfile
 
         silence_path = os.path.join(AUDIO_DIR, "silence.wav")
 
@@ -444,6 +444,29 @@ def transcribe_audio(audio_path: str) -> dict:
     if whisper_model is None:
         return {"text": "", "confidence": 0.0, "language": "zh"}
 
+    # --- 第一道防線：音量/能量檢測 (VAD) ---
+    try:
+        # 讀取音頻檔案
+        sample_rate, data = wavfile.read(audio_path)
+
+        # 如果是立體聲，轉為單聲道
+        if len(data.shape) > 1:
+            data = data.mean(axis=1)
+
+        # 計算最大振幅 (簡單的音量檢測)
+        # 數值可能需要根據你的麥克風靈敏度調整，通常 500-1000 是一個安全範圍 (針對 int16 格式)
+        max_amplitude = np.max(np.abs(data))
+
+        logger.info(f"音頻最大振幅: {max_amplitude}")
+
+        # 如果音量太小，直接視為靜音，不送進 Whisper
+        if max_amplitude < 500:
+            logger.info("檢測到靜音 (音量過低)，跳過轉錄")
+            return {"text": "", "confidence": 1.0, "language": "zh"}
+
+    except Exception as e:
+        logger.warning(f"音量檢測失敗，繼續進行轉錄: {e}")
+
     prompt_text = (
         "以下是關於大腸鏡衛教的醫學對話。關鍵字包含:大腸鏡檢查、清腸劑、清腸藥、保可淨"
         "無痛檢查、一般檢查"
@@ -459,10 +482,30 @@ def transcribe_audio(audio_path: str) -> dict:
             initial_prompt=prompt_text,  # <--- 關鍵修改在這裡
             temperature=0,  # 稍微降低隨機性，讓它更保守地依賴 prompt
             beam_size=5,  # 增加搜索廣度，提高準確率
+            no_speech_threshold=0.6,
+            logprob_threshold=-1.0,
         )
 
         text = result["text"].strip()
         segments = result.get("segments", [])
+
+        # --- 第二道防線：Whisper 內建的非語音機率 ---
+        if segments:
+            avg_no_speech_prob = sum(
+                seg.get("no_speech_prob", 0) for seg in segments
+            ) / len(segments)
+            if avg_no_speech_prob > 0.6:
+                logger.info(f"Whisper 判定為非語音 (prob: {avg_no_speech_prob})")
+                return {
+                    "text": "",
+                    "confidence": avg_no_speech_prob,
+                    "is_silence": True,
+                }
+
+        # --- 第三道防線：過濾常見幻覺詞 ---
+        if text in ["字幕", "字幕由", "抗癲", "肌肉", "殊殺", ""]:
+            return {"text": "", "confidence": 0.0, "is_silence": True}
+
         avg_confidence = (
             sum(seg.get("no_speech_prob", 0) for seg in segments) / len(segments)
             if segments
@@ -470,15 +513,10 @@ def transcribe_audio(audio_path: str) -> dict:
         )
         confidence = 1.0 - avg_confidence
 
-        return {
-            "text": text,
-            "confidence": confidence,
-            "language": result.get("language", "zh"),
-        }
+        return {"text": text, "confidence": confidence, "is_silence": False}
     except Exception as e:
         logger.error(f"音頻轉錄錯誤: {e}")
-        logger.error(traceback.format_exc())
-        return {"text": "", "confidence": 0.0, "language": "zh"}
+        return {"text": "", "confidence": 0.0, "is_silence": False}
 
 
 def get_agent_code_by_session(session_id: str) -> Optional[str]:
@@ -598,6 +636,7 @@ async def speech_to_text(
             executor, transcribe_audio, saved_audio_path
         )
         user_text = transcription["text"].strip()
+        is_silence = transcription.get("is_silence", False)  # 獲取靜音狀態
 
         logger.info(f"轉錄結果 for session {current_session_id}: {user_text}")
 
@@ -637,6 +676,7 @@ async def speech_to_text(
             text=user_text,
             confidence=transcription["confidence"],
             session_id=current_session_id,  # <--- 回傳 session_id
+            is_silence=is_silence,
         )
 
     except Exception as e:

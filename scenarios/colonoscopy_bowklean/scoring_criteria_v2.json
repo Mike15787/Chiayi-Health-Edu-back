@@ -35,7 +35,9 @@
         "type": "RAG_review_med_history",
         "example_answer": [
             "請問您之前有使用過清腸劑(藥)/保可淨嗎",
-            "您之前有用過這個藥嗎"
+            "您之前有用過這個藥嗎",
+            "這是您第一次使用清腸劑嗎？", 
+            "以前有做過大腸鏡喝過這種藥水嗎？"
         ]
     },
     {
@@ -170,7 +172,7 @@
         "item": "說明開始作用時間及平均時數",
         "任務說明": "告知病人服用清腸藥後，大約多久會開始腹瀉，並提供促進排便的建議。",
         "weight": 0.5,
-        "type": "RAG",
+        "type": "bowklean_onset_time",
         "example_answer": [
             "因藥物藥性溫和，通常服藥2-3小時後會開始出現腹瀉之清腸反應，儘量蹲坐馬桶，促進便意產生，可多走動、按摩腹部、以溫水沖肛門刺激排便。"
         ]
@@ -288,7 +290,7 @@
     }, 
 
     {
-        "id": "med_mix_method_and_time.s1",
+        "id": "bowklean_mix_method",
         "category": "諮商衛教",
         "item": "說明保可淨使用方式",
         "任務說明": "說明清腸劑的泡製方法，需要正確無誤",
@@ -299,12 +301,12 @@
         ]
     }, 
     {
-        "id": "med_mix_method_and_time.s2",
+        "id": "dulcolax_method_and_time",
         "category": "諮商衛教",
         "item": "說明樂可舒使用方式",
         "任務說明": "口服瀉藥錠劑服用時間及方法",
         "weight": 0.5,
-        "type": "first_med_mix_time",
+        "type": "dulcolax_method_and_time",
         "example_answer": [
             "在檢查前一天中午12點服用「口服瀉藥錠劑」樂可舒(Dulcolax)X顆。"
         ]
