@@ -31,6 +31,16 @@ from scenarios.colonoscopy_bowklean.config import (
     CATEGORY_TO_FIELD_MAP,
     COMPOSITE_SUB_ITEM_IDS,
 )
+
+logging.basicConfig(
+    level=logging.INFO,
+    # 關鍵是這一行：只保留 %(message)s，代表只顯示內容
+    format='%(message)s', 
+    
+    # 注意：如果您的程式在其他地方已經設定過 logging，
+    # 加上 force=True 可以強制覆蓋舊設定 (Python 3.8+ 適用)
+    force=True 
+)
 logger = logging.getLogger(__name__)
 
 
@@ -86,12 +96,27 @@ class ColonoscopyBowkleanScoringLogic:
         # 如果相似度低於 0.45，代表這句話跟評分標準沒什麼關係，就不要硬抓進來
         # 這能大幅減少 LLM 的誤判
         SIMILARITY_THRESHOLD = 0.45
-
+        
         relevant_ids = set()
+
+        # [新增] 用來收集詳細資訊的列表
+        debug_details = []
+
         for j, idx in enumerate(I[0]):
-            score = distances[0][j]
+            score = float(distances[0][j]) # 轉成 float 方便顯示
             if idx != -1 and score > SIMILARITY_THRESHOLD:
                 relevant_ids.add(self.criteria_id_list[idx])
+                # 記錄詳細資訊
+                debug_details.append(f"[{score:.4f}] {self.criteria_id_list[idx]}")
+
+        # --- [新增] 將搜尋結果印在 Terminal ---
+        logger.info(f"\n🔍 [向量搜尋詳情] 輸入片段: {user_input[:30]}...")
+        if debug_details:
+            for detail in debug_details:
+                logger.info(f"   {detail}")
+        else:
+            logger.info("   (無相關結果)")
+        logger.info("-" * 40)
 
         # --- [修改 1] 強制觸發邏輯 ---
         # 如果 "說明保可淨使用方式" (s1) 被觸發，則強制加入 "臨床判斷-服藥時間" (1 & 2)

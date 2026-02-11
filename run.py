@@ -30,7 +30,7 @@ def main():
     parser.add_argument(
         "--provider",
         type=str,
-        choices=["gemini", "ollama", "vllm"],
+        choices=["gemini", "ollama", "vllm", "llamacpp"],
         default="ollama",
         help="選擇 LLM 供應商 (預設 ollama)",
     )

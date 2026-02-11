@@ -1,6 +1,18 @@
 # tests/voice_replay_tester.py
 import sys
 import os
+import argparse  # [新增]
+
+# --- [新增] 在導入其他專案模組前，先解析參數並設定環境變數 ---
+# 這樣 utils.py 被 import 時就能讀到正確的 LLM_PROVIDER
+parser = argparse.ArgumentParser(add_help=False)
+parser.add_argument("--provider", type=str, default="ollama", help="LLM Provider")
+# 使用 parse_known_args 避免因為還沒定義其他參數而報錯
+args, _ = parser.parse_known_args()
+
+os.environ["LLM_PROVIDER"] = args.provider
+print(f"🔧 [VoiceReplay] LLM Provider set to: {os.environ['LLM_PROVIDER']}")
+
 import asyncio
 import logging
 import uuid
@@ -8,7 +20,6 @@ import re
 from datetime import datetime
 import whisper
 import torch
-
 # --- 新增音訊處理套件 ---
 import soundfile as sf
 import librosa
@@ -437,6 +448,21 @@ async def run_voice_replay_test(target_session_ids: list):
 if __name__ == "__main__":
     # 目標 Session IDs
     target_sessions = [
+        "session_1769171127492_0ghz1or6j", #0123
+        "session_1769171230029_5gnhxi16b", #0123
+        "session_1769172118428_51fngc9bz", #0123
+        "session_1769303919499_tgpqudkp2", #0125
+        "session_1769305390196_txyscuj5a", #0125
+        "session_1769434914690_arjshypby", #0126
+        "session_1769511182774_0hdkvwy3h", #0127
+        "session_1769512534643_o5fuqefpg",
+        "session_1769603505990_6fbow92m6",
+        "session_1769693002595_th23ayfeo",
+        "session_1769774994631_copzyqvas",
+        "session_1769776732660_p3k2fl0zk",
+        "session_1769778247208_vrfujzuml",
+        "session_1769948170673_m4nq4emf1",
+        "session_1769949647951_b0cin8d6b",
         "session_1770123206737_6xnnyib7d",
         "session_1770124069866_1z3snqkub",
     ]

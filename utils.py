@@ -18,6 +18,9 @@ VLLM_API_URL = os.getenv("VLLM_API_URL", "http://localhost:8243/v1/chat/completi
 # 因為 vLLM server 啟動時指定了模型，API 呼叫時必須傳入完全一樣的字串
 VLLM_MODEL_NAME = os.getenv("VLLM_MODEL_NAME", "google/gemma-3-4b-it")
 
+LLAMA_CPP_API_URL = os.getenv("LLAMA_CPP_API_URL", "http://localhost:8243/v1/chat/completions")
+
+
 
 async def generate_llm_response(prompt: str, model_name: str = "gemma3:4b") -> str:
     """
@@ -32,9 +35,71 @@ async def generate_llm_response(prompt: str, model_name: str = "gemma3:4b") -> s
         # 注意：這裡我們忽略傳入的 model_name (例如 gemma3:12b)，
         # 強制使用 vLLM Server 上載入的模型 (google/gemma-3-4b-it)
         return await _vllm_generate(prompt, VLLM_MODEL_NAME)
+    elif provider == "llamacpp":
+        # 如果沒有指定模型名稱，預設給一個 placeholder，llama-server 通常只載入一個模型所以名稱不重要
+        target_model = model_name if model_name else "gemma-3-12b-it"
+        return await _llamacpp_generate(prompt, target_model)
+
     else:
         # 預設 Ollama
         return await _ollama_generate(prompt, model_name)
+
+async def _llamacpp_generate(prompt: str, model_name: str) -> str:
+    """
+    呼叫本地運行的 llama.cpp server (OpenAI Compatible Endpoint)
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            logger.info(f"正在呼叫 Llama.cpp API ({LLAMA_CPP_API_URL})...")
+            
+            # Timeout 設定
+            # 由於 llama.cpp 依賴 CPU/GPU 混合運算，Gemma-3-12B 可能生成較慢
+            # 建議設定長一點的 timeout
+            timeout = 120.0 
+
+            payload = {
+                "model": model_name, 
+                "messages": [
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.2,
+                "top_p": 0.9,
+                # 雖然 server 啟動參數設定 -n 512，但這裡可以請求更多，
+                # 不過最終會被 server 的 -n 限制住。
+                "max_tokens": 1024, 
+                "stream": False 
+            }
+            
+            response = await client.post(
+                LLAMA_CPP_API_URL, 
+                json=payload, 
+                timeout=timeout
+            )
+            
+            # 檢查 HTTP 狀態碼
+            if response.status_code != 200:
+                logger.error(f"Llama.cpp API 錯誤: {response.status_code} - {response.text}")
+                return "抱歉，AI 服務暫時無法使用。"
+
+            result = response.json()
+            
+            # 解析 OpenAI 格式的回傳
+            if 'choices' in result and len(result['choices']) > 0:
+                content = result['choices'][0]['message']['content']
+                return content.strip()
+            else:
+                logger.error(f"Llama.cpp 回傳格式異常: {result}")
+                return "抱歉，AI 回傳了無效的格式。"
+            
+        except httpx.ConnectError:
+             logger.error(f"無法連接到 Llama.cpp API ({LLAMA_CPP_API_URL})。請確認 Server 是否已啟動且 Port 正確 (8243)。")
+             return "抱歉，AI 服務未連線。"
+        except httpx.TimeoutException:
+            logger.error(f"Llama.cpp 回應逾時 (超過 {timeout} 秒)")
+            return "抱歉，AI 運算超時，請嘗試減少內容長度。"
+        except Exception as e:
+            logger.error(f"Llama.cpp 生成錯誤: {e}")
+            return "抱歉，處理您的請求時發生錯誤。"
 
 async def _ollama_generate(prompt: str, model_name: str) -> str:
     """

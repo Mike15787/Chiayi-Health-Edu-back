@@ -77,6 +77,29 @@ python -m vllm.entrypoints.openai.api_server \
     --gpu-memory-utilization 0.7
 
 
+llama-server啟動方式
+目前已經有先寫了一個.sh檔
+nano run_server.sh
+-------------------------
+#!/bin/bash
+
+# 這是執行檔的絕對路徑
+/home/braslab/llama.cpp/build/bin/llama-server \
+  -m /home/braslab/llama.cpp/models/gemma-3-12b-it-q4_0.gguf \
+  --port 8243 \
+  -n 512 \
+  -ngl 99 \
+  -c 4096 \
+  --host 0.0.0.0
+-----------------------存檔離開 (Ctrl+O -> Enter -> Ctrl+X)
+給予執行權限
+chmod +x run_server.sh
+
+現在用 PM2 來啟動這個腳本
+cd llama.cpp
+pm2 start ./run_server.sh --name "llama-gemma"
+
+---------------------------------------------------
 #透過pm2管理方式 啟用 前端 後端 ngrok vllm
 
 # 1. 啟動前端 (假設在 frontend 目錄)
@@ -85,7 +108,10 @@ pm2 start "npm run dev" --name frontend
 
 # 2. 啟動後端 (使用虛擬環境的 python)
 cd /path/to/backend
+使用vllm (gemma3:4b 無量化)
 pm2 start "venv/bin/python run.py --env human --provider vllm" --name "health-backend"
+使用llamacpp (gemma3:12b 量化模型)
+pm2 start "venv/bin/python run.py --env human --provider llamacpp" --name "health-backend"
 
 # 3. 啟動 ngrok 隧道
 pm2 start "ngrok start --all" --name ngrok-tunnels
@@ -115,3 +141,13 @@ pm2 delete my-frontend
 
 刪除vllm執行緒
 pm2 delete vllm-service
+
+
+啟動ollama
+sudo systemctl start ollama
+
+關閉ollama
+sudo systemctl stop ollama
+sudo systemctl disable ollama
+
+python tests/voice_replay_tester.py --provider ollama
