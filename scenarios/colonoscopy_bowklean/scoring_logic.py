@@ -33,7 +33,6 @@ from scenarios.colonoscopy_bowklean.config import (
     CATEGORY_TO_FIELD_MAP,
     COMPOSITE_SUB_ITEM_IDS,
 )
-<<<<<<< HEAD
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,12 +42,6 @@ logging.basicConfig(
     # 注意：如果您的程式在其他地方已經設定過 logging，
     # 加上 force=True 可以強制覆蓋舊設定 (Python 3.8+ 適用)
     force=True 
-)
-=======
-<<<<<<< HEAD
-=======
-from scenarios.colonoscopy_bowklean.summary_logic import (
-    calculate_organization_efficiency_score_llm,
 )
 
 CRITERIA_KEYWORDS = {
@@ -80,8 +73,6 @@ CRITERIA_KEYWORDS = {
 
 AUDIO_DIR = "audio"
 
->>>>>>> refactor-branch
->>>>>>> 4e9ebb09b6afd18eeaebaf76b0b1201e801ff9db
 logger = logging.getLogger(__name__)
 
 
@@ -146,7 +137,6 @@ class ColonoscopyBowkleanScoringLogic:
         for j, idx in enumerate(I[0]):
             score = float(distances[0][j]) # 轉成 float 方便顯示
             if idx != -1 and score > SIMILARITY_THRESHOLD:
-<<<<<<< HEAD
                 relevant_ids.add(self.criteria_id_list[idx])
                 # 記錄詳細資訊
                 debug_details.append(f"[{score:.4f}] {self.criteria_id_list[idx]}")
@@ -159,21 +149,6 @@ class ColonoscopyBowkleanScoringLogic:
         else:
             logger.info("   (無相關結果)")
         logger.info("-" * 40)
-=======
-                c_id = self.criteria_id_list[idx]
-
-                # --- [方案 B 修改] 關鍵字硬過濾 (Keyword Filter) ---
-                if c_id in CRITERIA_KEYWORDS:
-                    required_kws = CRITERIA_KEYWORDS[c_id]
-                    # 如果使用者輸入中，連一個關鍵字都沒出現，就直接略過
-                    if not any(k in user_input for k in required_kws):
-                        logger.debug(
-                            f"[{c_id}] 向量命中(score={score:.2f})但關鍵字不符，忽略。"
-                        )
-                        continue
-
-                relevant_ids.add(c_id)
->>>>>>> 4e9ebb09b6afd18eeaebaf76b0b1201e801ff9db
 
         # --- [修改 1] 強制觸發邏輯 ---
         # 如果 "說明保可淨使用方式" (s1) 被觸發，則強制加入 "臨床判斷-服藥時間" (1 & 2)
@@ -510,15 +485,9 @@ class ColonoscopyBowkleanScoringLogic:
             """
         elif criterion["id"] == "clinical_med_timing_2":
             prompt = f"""
-<<<<<<< HEAD
             請根據[要求]中的條件判斷[對話紀錄中]學員的衛教內容是否正確
             [要求] 學員必須提到 病人應該在檢查當天 ({precomputed_data.exam_day}) 的 {precomputed_data.second_dose_time} 服用第二包藥。
             [對話紀錄]: {conversation_context}
-=======
-            請判斷學員的衛教內容是否正確，只要學員有回答出情境中的內容就正確，重點在服用時間有沒有對上，早上、上午和凌晨是一樣的意思
-            [情境] 病人應該在檢查當天 ({precomputed_data.exam_day}) 的 {precomputed_data.second_dose_time} 服用第二包藥(保可淨)。
-            [學員回答]: {conversation_context}
->>>>>>> refactor-branch
             
             忽略無關藥物(清腸劑/保可淨)的日期說明。這裡只檢查「藥物(清腸劑/保可淨)」的服用時間
             學員是否有正確告知病人第二包藥的服用日期和時間？如果正確，只輸出 "1"。如果不正確，只輸出 "0"。
@@ -923,8 +892,8 @@ class ColonoscopyBowkleanScoringLogic:
         [評分標準]:
         學員是否有問類似以下的問題：
         - "您以前有做過大腸鏡嗎？"
-        - "您之前有喝過保可淨/清腸藥嗎？"
-        - "您知道這個藥怎麼喝嗎？" (隱含詢問經驗)
+        - "請問您之前有使用過清腸劑(藥)/保可淨嗎"
+        - "您之前有用過這個藥嗎?"
         
         如果有詢問經驗，請輸出 "1"，否則輸出 "0"。
         """
