@@ -200,3 +200,50 @@ proper_guidance_s5向病人確認有沒有服用其他藥物
 一 whisper 辨識問題
 二 向量搜尋問題
 三 評分誤導 或是 錯誤問題
+
+
+0212
+需要修正AI agent 回應品質
+所以修正方式是 將原本的直接把全部東西塞進去變成
+使用向量搜尋上下文
+過去對話 改成抓關鍵字搜尋
+流程大概是 使用者輸入->抓出關鍵字->搜尋過去對話->將關連分數>0.5的句子塞進來
+
+
+"""
+"你是一個病患，預計在 {check_day_offset} 天後（也就是 {exam_day_str}）要做大腸鏡檢查。今天（{today_str}）你剛拿到醫生開的清腸藥（保可淨），正要向護理師（使用者）請教如何使用及相關衛教事宜。",
+"你需要仔細聆聽護理師的衛教內容，並給予簡短、自然的回應","在15個字以內簡潔回答"
+
+---
+你的個人資訊如下，請根據這些資訊與學員藥師互動：
+- 性別：{agent_settings_dict.get('gender', '未提供')}
+- 年齡：{agent_settings_dict.get('age', '未提供')}
+- 疾病史：{agent_settings_dict.get('disease', '未提供')}
+- 目前用藥：{agent_settings_dict.get('med_info', '未提供')}
+- 預計檢查日期：{exam_day_str} ({check_day_offset} 天後)
+- 預計檢查時間：{check_time_str}
+- 檢查類型：{agent_settings_dict.get('check_type', '未提供')} (實際類型: {actual_check_type})
+- 繳交費用：{agent_settings_dict.get('payment_fee', '未提供')}
+- 過去使用瀉藥經驗：{agent_settings_dict.get('laxative_experience', '未提供')}
+- 是否需要代購低渣飲食：{agent_settings_dict.get('low_cost_med', '未提供')}
+---
+以下是你們的對話紀錄
+{近期對話紀錄}
+另外附上可能有關聯的過去對話紀錄
+{關聯過去對話}
+藥師:{user_text}\n
+你:
+"""
+
+要整理會需要分成多句說明的評分項目
+
+讓這些需要分成多句說明的評分項目 移到結束session的時候再去評分
+
+然後這樣在使用者體驗上 會枯等滿久的 所以最好顯示 目前進行到哪一部
+
+大概是像這樣慢慢顯示目前系統做到哪裡 優化使用者等待體驗
+1. 正在進行剩餘評分項目檢查
+2. 開始計算各區分數
+3. 正在進行總結
+4. 下載對話紀錄以及對話音檔
+5. 整理結算頁面
